@@ -3,6 +3,7 @@ import asyncio
 import functools
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -22,7 +23,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from urllib.parse import urlparse, unquote as url_unquote
+from urllib.parse import urlparse, unquote as url_unquote, quote as url_quote
 import hmac
 import ipaddress
 import urllib.request
@@ -257,35 +258,59 @@ def _extract_multimsg_text(obj: dict) -> Optional[str]:
              for item in news_items if isinstance(item, dict) and isinstance(item.get("text"), str)]
     texts = [t for t in texts if t]
     return "\n".join(texts).strip() or None
+def _json_card_values(obj: Any, limit: int = 16) -> List[str]:
+    keys = {"title", "desc", "description", "summary", "prompt", "text", "content", "name", "brief", "source", "tag", "url"}
+    values: List[str] = []
+    seen = set()
+    def add(v):
+        if not isinstance(v, str):
+            return
+        v = v.strip().replace("[图片]", "").strip()
+        if not v or v in seen:
+            return
+        if len(v) > MAX_MULTIMSG_PREVIEW:
+            v = v[:MAX_MULTIMSG_PREVIEW] + "…"
+        seen.add(v)
+        values.append(v)
+    def walk(x, depth=0, key=""):
+        if len(values) >= limit or depth > 5:
+            return
+        if isinstance(x, dict):
+            for k, v in x.items():
+                kk = str(k).lower()
+                if kk in keys:
+                    add(v)
+                walk(v, depth + 1, kk)
+        elif isinstance(x, list):
+            for item in x[:20]:
+                walk(item, depth + 1, key)
+        elif key in keys:
+            add(x)
+    walk(obj)
+    return values
+
 def _extract_json_card(segments: List[Dict]) -> Optional[str]:
     for seg in segments:
-        if seg.get("type") == "json":
-            raw = (seg.get("data") or {}).get("data", "")
-            if not raw:
-                return "[卡片消息]"
-            if isinstance(raw, str) and "&#44;" in raw:
-                raw = raw.replace("&#44;", ",")
-            try:
-                obj = json.loads(raw)
-                multimsg_text = _extract_multimsg_text(obj)
-                if multimsg_text:
-                    if len(multimsg_text) > MAX_MULTIMSG_PREVIEW:
-                        multimsg_text = multimsg_text[:MAX_MULTIMSG_PREVIEW] + "…"
-                    return f"[合并转发预览]\n{multimsg_text}"
-                title = (
-                    obj.get("meta", {}).get("news", {}).get("title")
-                    or obj.get("meta", {}).get("detail_1", {}).get("desc")
-                    or obj.get("prompt", "")
-                    or obj.get("title", "")
-                    or obj.get("desc", "")
-                )
-                if title:
-                    if len(title) > MAX_TITLE_PREVIEW:
-                        title = title[:MAX_TITLE_PREVIEW] + "…"
-                    return f"[卡片消息: {title}]"
-            except (json.JSONDecodeError, AttributeError):
-                pass
+        if seg.get("type") != "json":
+            continue
+        raw = (seg.get("data") or {}).get("data", "")
+        if not raw:
             return "[卡片消息]"
+        if isinstance(raw, str):
+            raw = _cq_unescape(raw)
+        try:
+            obj = json.loads(raw)
+            multimsg_text = _extract_multimsg_text(obj)
+            if multimsg_text:
+                if len(multimsg_text) > MAX_MULTIMSG_PREVIEW:
+                    multimsg_text = multimsg_text[:MAX_MULTIMSG_PREVIEW] + "…"
+                return f"[合并转发预览]\n{multimsg_text}"
+            values = _json_card_values(obj)
+            if values:
+                return "[卡片消息]\n" + "\n".join(f"- {v}" for v in values[:10])
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+        return "[卡片消息]"
     return None
 _XML_TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE)
 _XML_BRIEF_RE = re.compile(r'action="[^"]*"[^>]*brief="([^"]*)"', re.IGNORECASE)
@@ -341,11 +366,18 @@ _SEGMENT_FORMATTERS: Dict[str, Callable] = {
     ),
     "rps": _fmt_rps,
     "dice": lambda d: f"[骰子: {d.get('id', d.get('result', ''))}]",
+    "basketball": lambda d: f"[篮球: {d.get('id', d.get('result', ''))}]",
+    "poke": lambda d: f"[戳一戳: {d.get('qq') or d.get('target_id') or ''}]",
+    "anonymous": lambda d: f"[匿名: {d.get('name') or d.get('id') or ''}]",
+    "markdown": lambda d: f"[Markdown消息: {(d.get('content') or d.get('data') or '')[:MAX_TITLE_PREVIEW]}]",
+    "node": lambda d: "[转发节点]",
 }
 _SEGMENT_KEY_MAP = {
     "file": "file_seg", "location": "location_msg", "share": "share_msg",
     "contact": "contact_msg", "music": "music_msg", "mface": "mface_msg",
-    "rps": "rps_msg", "dice": "dice_msg",
+    "rps": "rps_msg", "dice": "dice_msg", "basketball": "basketball_msg",
+    "poke": "poke_msg", "anonymous": "anonymous_msg", "markdown": "markdown_msg",
+    "node": "node_msg",
 }
 def _extract_typed_segments(segments: List[Dict]) -> Dict[str, Optional[str]]:
     result: Dict[str, Optional[str]] = {}
@@ -1136,6 +1168,9 @@ class ConnectionMixin:
         if post_type == "notice":
             self._dispatch_for_chat(f"notice:{data.get('notice_type', '')}", self._handle_notice(data, conn), notice=True)
             return
+        if post_type == "request":
+            self._dispatch_for_chat(f"request:{data.get('request_type', '')}", self._handle_request(data, conn), notice=True)
+            return
 class MessageMixin:
     async def _handle_message(self, data: dict, conn: Optional[_NapCatConnection] = None):
         if conn is None:
@@ -1317,15 +1352,16 @@ class MessageMixin:
             display_text = (display_text or "") + " [视频消息]"
         if parsed["face_id"]:
             display_text = (display_text or "") + f" [表情{parsed['face_id']}]"
-        for _seg_text in (parsed["json_card"], parsed["xml_msg"], parsed["file_seg"],
-                          parsed["location_msg"], parsed["share_msg"], parsed["contact_msg"],
-                          parsed["music_msg"], parsed["mface_msg"], parsed["rps_msg"], parsed["dice_msg"]):
+        typed_parts = [v for k, v in parsed.items() if k.endswith("_msg") or k.endswith("_seg")]
+        for _seg_text in (parsed.get("json_card"), parsed.get("xml_msg"), *typed_parts):
             if _seg_text:
                 display_text = (display_text or "") + " " + _seg_text
         if parsed["forward_content"]:
             display_text = (display_text or "") + parsed["forward_content"]
         if parsed["reply_id"]:
-            display_text, quoted_images = await self._append_reply_context(display_text, parsed["reply_id"], conn)
+            display_text, quoted_images = await self._append_reply_context(
+                display_text, parsed["reply_id"], conn, parsed.get("segments", [])
+            )
         else:
             quoted_images = []
         forward_images = parsed.get("forward_images", [])
@@ -1359,6 +1395,8 @@ class MessageMixin:
                 continue
             local_path = None
             file_url = data.get("url") or data.get("file_url") or ""
+            if not file_url:
+                file_url = await self._resolve_file_url(data, conn)
             # C3: Only allow files from media cache directory (allowlist approach)
             cache_dir = str(self._media_cache._dir.resolve())
             if file_url.startswith("file://"):
@@ -1387,6 +1425,30 @@ class MessageMixin:
             except Exception as e:
                 pass
         return injected
+
+    async def _resolve_file_url(self, data: dict, conn) -> str:
+        file_id = data.get("file_id") or data.get("id") or data.get("file")
+        if not file_id:
+            return ""
+        params_list = [{"file_id": file_id}, {"file": file_id}, {"id": file_id}]
+        busid = data.get("busid") or data.get("bus_id")
+        if busid is not None:
+            params_list.insert(0, {"file_id": file_id, "busid": busid})
+        for params in params_list:
+            try:
+                result = await self._send_action_conn(conn, "get_file", params, timeout=10.0)
+            except Exception:
+                continue
+            if result.get("retcode") != 0:
+                continue
+            rdata = result.get("data") or {}
+            url = rdata.get("url") or rdata.get("file_url") or rdata.get("path") or rdata.get("file") or ""
+            if url:
+                if os.path.isabs(str(url)):
+                    return f"file://{url}"
+                return str(url)
+        return ""
+
     async def _build_and_dispatch_event(self, parsed: dict, display_text: str, text: str,
                                          chat_id: str, user_id: str, sender_name: str,
                                          message_id: str, msg_type: str, *,
@@ -1462,14 +1524,23 @@ class MessageMixin:
             f_images = _extract_images(f_segments)
             nested_forward_id = _extract_forward(f_segments)
             json_card = _extract_json_card(f_segments)
+            xml_msg = _extract_xml(f_segments)
+            typed = _extract_typed_segments(f_segments)
             line_parts = []
             if f_text:
                 line_parts.append(f_text)
             if f_images and len(fwd_images) < self._FORWARD_MAX_IMAGES:
                 fwd_images.extend(f_images[:self._FORWARD_MAX_IMAGES - len(fwd_images)])
                 line_parts.append("[图片]")
-            if json_card:
-                line_parts.append(json_card)
+            for _seg_text in (json_card, xml_msg, *typed.values()):
+                if _seg_text:
+                    line_parts.append(_seg_text)
+            try:
+                injected = await self._inject_file_content(f_segments, "", conn)
+                if injected:
+                    line_parts.append(injected[:MAX_QUOTE_TEXT] + "…" if len(injected) > MAX_QUOTE_TEXT else injected)
+            except Exception:
+                pass
             if nested_forward_id:
                 nested_text, nested_imgs = await self._resolve_forward_message(
                     nested_forward_id, conn, depth=depth + 1, _seen=_seen, _fetch_count=_fetch_count)
@@ -1483,9 +1554,25 @@ class MessageMixin:
         if fwd_lines:
             text_block = "\n[合并转发消息]\n" + "\n".join(fwd_lines) + "\n[转发结束]"
         return text_block, fwd_images
-    async def _append_reply_context(self, display_text: str, reply_id: str, conn) -> tuple:
+
+    def _reply_segment_fallback(self, segments: List[Dict]) -> str:
+        for seg in segments or []:
+            if seg.get("type") != "reply":
+                continue
+            data = seg.get("data") or {}
+            sender = data.get("qq") or data.get("user_id") or data.get("sender_id") or "?"
+            body = ""
+            for key in ("text", "content", "message", "summary"):
+                if data.get(key):
+                    body = str(data.get(key))
+                    break
+            body = body or "无法从NapCat取回原文"
+            return f"\n[引用 {sender}: {body[:MAX_QUOTE_TEXT]}]"
+        return ""
+
+    async def _append_reply_context(self, display_text: str, reply_id: str, conn, source_segments: Optional[List[Dict]] = None) -> tuple:
         quoted_images: List[str] = []
-        _fallback = "\n[引用了一条消息，但无法获取内容]"
+        _fallback = self._reply_segment_fallback(source_segments or []) or "\n[引用了一条消息，但无法获取内容]"
         try:
             quoted_obj = await asyncio.wait_for(self.get_msg(reply_id, conn=conn), timeout=10.0)
             if not quoted_obj:
@@ -1497,11 +1584,18 @@ class MessageMixin:
             quoted_images = _extract_images(quoted_segments)
             quoted_forward_id = _extract_forward(quoted_segments)
             quoted_json_card = _extract_json_card(quoted_segments)
+            quoted_typed = _extract_typed_segments(quoted_segments)
             quote_parts = []
             if quoted_text:
                 quote_parts.append(quoted_text[:MAX_MULTIMSG_PREVIEW] + "…" if len(quoted_text) > MAX_MULTIMSG_PREVIEW else quoted_text)
             elif quoted_images:
                 quote_parts.append("[图片]")
+            for _seg_text in quoted_typed.values():
+                if _seg_text:
+                    quote_parts.append(_seg_text)
+            quoted_file_text = await self._inject_file_content(quoted_segments, "", conn)
+            if quoted_file_text:
+                quote_parts.append(quoted_file_text[:MAX_QUOTE_TEXT] + "…" if len(quoted_file_text) > MAX_QUOTE_TEXT else quoted_file_text)
             if quoted_forward_id:
                 try:
                     fwd_text, fwd_imgs = await self._resolve_forward_message(quoted_forward_id, conn)
@@ -1840,6 +1934,47 @@ class SendMixin:
         msg_kind, target_id = _parse_chat_id(chat_id)
         action, params = self._send_msg_params(msg_kind, target_id, segments)
         return await self._send_action_conn(conn, action, params, timeout=timeout)
+    def _media_extension(self, path: str) -> str:
+        parsed_path = urlparse(path).path if "://" in str(path) else str(path)
+        return os.path.splitext(parsed_path)[1].lower()
+
+    def _classify_media_path(self, path: str, *, force_voice: bool = False, as_document: bool = False) -> str:
+        if as_document:
+            return "document"
+        mime, _ = mimetypes.guess_type(path)
+        ext = self._media_extension(path)
+        if force_voice or (mime and mime.startswith("audio/")) or ext in {".mp3", ".wav", ".ogg", ".oga", ".opus", ".m4a", ".amr", ".silk", ".flac"}:
+            return "voice"
+        if (mime and mime.startswith("video/")) or ext in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}:
+            return "video"
+        if (mime and mime.startswith("image/")) or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+            return "image"
+        return "document"
+
+    def _as_onebot_file_value(self, path_or_url: str) -> str:
+        raw = str(path_or_url).strip()
+        if raw.startswith(("http://", "https://", "file://")):
+            return raw
+        p = Path(os.path.expanduser(raw)).resolve()
+        try:
+            return p.as_uri()
+        except ValueError:
+            return "file://" + url_quote(str(p))
+
+    async def _send_media_path(
+        self, chat_id: str, media_path: str, *, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        force_voice: bool = False, as_document: bool = False,
+    ) -> SendResult:
+        kind = self._classify_media_path(media_path, force_voice=force_voice, as_document=as_document)
+        if kind == "voice":
+            return await self.send_voice(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
+        if kind == "video":
+            return await self.send_video(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
+        if kind == "image":
+            return await self.send_image(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
+        return await self.send_document(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
+
     async def send(
         self,
         chat_id: str,
@@ -1857,10 +1992,33 @@ class SendMixin:
         settings = self._plugin_settings.get_chat(chat_id)
         # When tool_progress is off for this chat, intercept tool progress
         # messages (emoji + tool_name pattern) — return success without sending.
-        if settings.get("tool_progress") is False and _TOOL_PROGRESS_RE.match(content):
+        if settings.get("tool_progress") is False and _TOOL_PROGRESS_RE.match(content or ""):
             return SendResult(success=True)
+
+        media_files, cleaned_content = self.extract_media(content or "")
+        media_files = self.filter_media_delivery_paths(media_files)
+        if media_files:
+            as_document = "[[as_document]]" in (content or "")
+            if settings.get("strip_markdown", True):
+                cleaned_content = self.format_message(cleaned_content)
+            caption = cleaned_content.strip() or None
+            last_result = SendResult(success=True)
+            for idx, (media_path, is_voice) in enumerate(media_files):
+                result = await self._send_media_path(
+                    chat_id, media_path,
+                    caption=caption if idx == 0 else None,
+                    reply_to=reply_to if idx == 0 else None,
+                    metadata=metadata, force_voice=is_voice, as_document=as_document,
+                )
+                if not result.success:
+                    return result
+                last_result = result
+            return last_result
+
         if settings.get("strip_markdown", True):
-            content = self.format_message(content)
+            content = self.format_message(content or "")
+        if not content:
+            return SendResult(success=True)
         message_segments = self._message_with_optional_reply(
             chat_id, reply_to, {"type": "text", "data": {"text": content}}
         )
@@ -1872,12 +2030,17 @@ class SendMixin:
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._send_media(chat_id, "image", image_url, caption, reply_to)
+        return await self._send_media(chat_id, "image", self._as_onebot_file_value(image_url), caption, reply_to)
+    async def send_animation(
+        self, chat_id: str, animation_url: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        return await self.send_image(chat_id, animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
     async def _send_local_file(
         self, chat_id: str, path: str, seg_type: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, timeout: float = 30.0,
     ) -> SendResult:
-        file_uri = f"file://{os.path.abspath(path)}"
+        file_uri = self._as_onebot_file_value(path)
         return await self._send_media(chat_id, seg_type, file_uri, caption, reply_to, timeout=timeout)
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
@@ -1906,16 +2069,35 @@ class SendMixin:
     ) -> SendResult:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
-        abs_path = os.path.abspath(file_path)
-        name = file_name or os.path.basename(abs_path)
-        file_uri = f"file://{abs_path}"
+        raw_path = str(file_path).strip()
+        is_url = raw_path.startswith(("http://", "https://", "file://"))
+        local_path = ""
+        if raw_path.startswith("file://"):
+            local_path = url_unquote(urlparse(raw_path).path)
+        elif not raw_path.startswith(("http://", "https://")):
+            local_path = str(Path(os.path.expanduser(raw_path)).resolve())
+            if not os.path.isfile(local_path):
+                return SendResult(success=False, error=f"file not found: {raw_path}")
+        name_source = local_path or urlparse(raw_path).path or raw_path
+        name = file_name or os.path.basename(name_source) or "file"
+        file_uri = raw_path if is_url else self._as_onebot_file_value(local_path)
         tid = _safe_target_id(target_id)
         if isinstance(tid, SendResult):
             return tid
+        if caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            reply_to = None
         action = "upload_group_file" if msg_kind == "group" else "upload_private_file"
         params = {_onebot_target_key(msg_kind): tid, "file": file_uri, "name": name}
         result = await self._send_action_conn(conn, action, params, timeout=60.0)
-        return _result_to_send_result(result, "send_document")
+        sr = _result_to_send_result(result, "send_document")
+        if sr.success:
+            return sr
+        # Some OneBot implementations do not support upload_private_file or URL uploads.
+        # Degrade clearly instead of silently dropping the attachment.
+        if raw_path.startswith(("http://", "https://")):
+            return await self.send(chat_id, f"文件链接: {raw_path}", reply_to=reply_to, metadata=metadata)
+        return sr
     async def send_poke(self, chat_id: str, user_id: str) -> SendResult:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
@@ -1942,9 +2124,58 @@ class SendMixin:
             "emoji_id": eid,
         })
         return _result_to_send_result(result, "set_msg_emoji_like")
+    def _notice_sender_name(self, data: dict) -> str:
+        return str(data.get("nickname") or data.get("card") or data.get("user_id") or "system")
+
+    async def _dispatch_notice_text(self, data: dict, conn: _NapCatConnection, text: str, *, media_url: str = "", media_type: str = "") -> None:
+        msg_type = "group" if data.get("group_id") else "private"
+        user_id = str(data.get("user_id") or data.get("operator_id") or "")
+        if user_id and not await self._check_authorization_async(user_id, msg_type, {"message_type": msg_type, **data}, conn):
+            return
+        chat_id = f"group_{data.get('group_id')}" if msg_type == "group" else f"private_{user_id}"
+        if self._multi_account:
+            chat_id = f"{conn.name}:{chat_id}"
+        source = self.build_source(
+            chat_id=chat_id,
+            user_id=user_id or str(data.get("self_id") or "system"),
+            user_name=self._notice_sender_name(data),
+            message_id=str(data.get("message_id") or data.get("file", {}).get("id") or data.get("flag") or ""),
+            chat_type="group" if msg_type == "group" else "dm",
+        )
+        event = MessageEvent(source=source, text=text, message_type=MessageType.TEXT, raw_message=data, message_id=source.message_id)
+        if media_url:
+            event.media_urls = [media_url]
+            event.media_types = [media_type or "file"]
+        await self.handle_message(event)
+
+    async def _handle_group_upload_notice(self, data: dict, conn: _NapCatConnection) -> None:
+        file_info = data.get("file") or {}
+        name = file_info.get("name") or file_info.get("file") or "未知文件"
+        size = file_info.get("size")
+        file_id = file_info.get("id") or file_info.get("file_id") or file_info.get("file") or ""
+        file_url = file_info.get("url") or file_info.get("file_url") or ""
+        if not file_url:
+            file_url = await self._resolve_file_url(file_info, conn)
+        seg = {"type": "file", "data": {**file_info, "name": name}}
+        if file_url:
+            seg["data"]["url"] = file_url
+        injected = await self._inject_file_content([seg], "", conn)
+        text = f"[群文件上传: {name}"
+        if size:
+            text += f" size={size}"
+        text += "]"
+        if injected:
+            text += "\n" + injected
+        await self._dispatch_notice_text(data, conn, text, media_url=file_url, media_type="file")
+
     async def _handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
         notice_type = data.get("notice_type", "")
         sub_type = data.get("sub_type", "")
+        if notice_type == "group_upload":
+            await self._handle_group_upload_notice(data, conn)
+            return
+        if notice_type in {"group_recall", "friend_recall", "group_increase", "group_decrease", "group_ban"}:
+            return
         if notice_type == "notify" and sub_type == "poke":
             poker_id = str(data.get("user_id", ""))
             target_id = data.get("target_id", "")
@@ -1952,14 +2183,28 @@ class SendMixin:
             if str(target_id) != str(self_id):
                 return
             if _HAS_APPROVAL:
-                chat_id = f"private_{poker_id}"
-                is_admin_approval = self._pending_approval_admin.get(chat_id, False)
+                # A poke approval should resolve the pending approval in the
+                # chat where the approval prompt was sent.  Group poke notices
+                # include group_id, but older code only checked private_<user>,
+                # so group approvals could never be accepted by poking.
+                candidate_chat_ids = []
+                if data.get("group_id"):
+                    candidate_chat_ids.append(f"group_{data.get('group_id')}")
+                candidate_chat_ids.append(f"private_{poker_id}")
+                if self._multi_account:
+                    candidate_chat_ids = [f"{conn.name}:{cid}" for cid in candidate_chat_ids] + candidate_chat_ids
                 admin_qq = os.getenv("ONEBOT_ADMIN_QQ") or conn.admin_qq or (conn.allowed_users[0] if conn.allowed_users else None)
-                if is_admin_approval and admin_qq and str(poker_id) != str(admin_qq):
-                    return
-                if chat_id in self._pending_approvals:
-                    admin_qq = admin_qq or os.getenv("ONEBOT_ADMIN_QQ") or conn.admin_qq or (conn.allowed_users[0] if conn.allowed_users else None)
-                    await self._resolve_approval_shortcut(chat_id, "1", poker_id, admin_qq)
+                for chat_id in candidate_chat_ids:
+                    is_admin_approval = self._pending_approval_admin.get(chat_id, False)
+                    if is_admin_approval and admin_qq and str(poker_id) != str(admin_qq):
+                        continue
+                    if chat_id in self._pending_approvals:
+                        await self._resolve_approval_shortcut(chat_id, "1", poker_id, admin_qq)
+                        return
+            await self._dispatch_notice_text(data, conn, f"[戳一戳: {poker_id}]")
+
+    async def _handle_request(self, data: dict, conn: _NapCatConnection) -> None:
+        return
     async def set_input_status(self, chat_id: str, event_type: int = 1) -> SendResult:
         msg_kind, target_id = _parse_chat_id(chat_id)
         if msg_kind == "group":
@@ -2066,7 +2311,7 @@ class SendMixin:
         if caption:
             segments.append({"type": "text", "data": {"text": caption}})
         message = self._message_with_optional_reply(chat_id, reply_to, *segments)
-        if seg_type == "image" and conn.http_api_url:
+        if conn.http_api_url:
             try:
                 tid = _safe_target_id(target_id)
                 if isinstance(tid, SendResult):
@@ -2076,15 +2321,16 @@ class SendMixin:
                 result = await self._http_call_conn(conn, action, params)
                 retcode = result.get("retcode", -1)
                 if retcode in (0, 200):
-                    return SendResult(success=True)
+                    data = result.get("data") or {}
+                    return SendResult(success=True, message_id=str(data.get("message_id", "")))
             except Exception as e:
                 logger.debug("HTTP fallback for media send failed: %s", e)
         action, params = self._send_msg_params(msg_kind, target_id, message)
         result = await self._send_action_conn(conn, action, params, timeout=timeout)
         retcode = result.get("retcode")
-        if seg_type == "image" and retcode == 200:
+        if retcode == 200:
             return SendResult(success=True)
-        if seg_type == "image" and retcode == -1:
+        if retcode == -1:
             msg = result.get("msg", "")
             if "timeout" in msg.lower():
                 return SendResult(success=True)
@@ -2439,7 +2685,27 @@ async def _standalone_send(
     echo = str(uuid.uuid4())
     id_key = "group_id" if msg_kind == "group" else "user_id"
     action = f"send_{msg_kind}_msg"
-    payload = {"action": action, "params": {id_key: tid, "message": [{"type": "text", "data": {"text": message}}]}, "echo": echo}
+    media_files = kwargs.get("media_files") or []
+    segments = []
+    if str(message).strip():
+        segments.append({"type": "text", "data": {"text": message}})
+    for media_path, is_voice in media_files:
+        if not os.path.exists(media_path):
+            return {"success": False, "error": f"Media file not found: {media_path}"}
+        ext = os.path.splitext(media_path)[1].lower()
+        file_uri = f"file://{os.path.abspath(media_path)}"
+        if ext in _IMAGE_EXTS:
+            seg_type = "image"
+        elif ext in _VIDEO_EXTS:
+            seg_type = "video"
+        elif is_voice or ext in _VOICE_EXTS or ext in _AUDIO_EXTS:
+            seg_type = "record"
+        else:
+            seg_type = "file"
+        segments.append({"type": seg_type, "data": {"file": file_uri}})
+    if not segments:
+        return {"success": False, "error": "No message or media to send"}
+    payload = {"action": action, "params": {id_key: tid, "message": segments}, "echo": echo}
     try:
         async with websockets.connect(ws_url, additional_headers=headers, open_timeout=15, **_WS_CONNECT_KWARGS) as ws:
             await ws.send(json.dumps(payload))

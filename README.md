@@ -25,12 +25,10 @@ OneBot v11 (NapCat) platform adapter plugin for Hermes Agent.
 - Concurrent task limit per chat (max 5, prevents memory exhaustion)
 - Constant-time token comparison (`hmac.compare_digest`)
 - Member cache (300s TTL, 5000 max)
-- Reverse WS send readiness wait + HTTP API fallback for startup races
-- Custom endpoint SSE auxiliary response compatibility for Hermes title generation
 
 ## Architecture
 
-Single-file, 6 Mixins + main adapter, 2481 lines:
+Single-file, 6 Mixins + main adapter, 2363 lines:
 
 | Class | Responsibility | Methods |
 |-------|---------------|---------|
@@ -38,7 +36,7 @@ Single-file, 6 Mixins + main adapter, 2481 lines:
 | ConnectionMixin | WS connect/reconnect/heartbeat/dispatch | 16 |
 | MessageMixin | Message parsing, auth, image download, file injection | 18 |
 | CommandMixin | 11 slash commands | 10 |
-| SendMixin | Outbound messages, media, editing, typing, notice handling | 32 |
+| SendMixin | Outbound messages, media, editing, typing, notice handling | 29 |
 | ApprovalMixin | Task approval (approve/deny) & update confirmation | 4 |
 | OneBotAdapter | Main class combining all Mixins | 7 |
 
