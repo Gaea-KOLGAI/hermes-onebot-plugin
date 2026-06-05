@@ -1,0 +1,90 @@
+name: onebot-platform
+label: OneBot (NapCat)
+kind: platform
+version: 2.2.0
+description: >
+  OneBot v11 gateway adapter for Hermes Agent with multi-account support.
+  Connects to NapCat (or any OneBot v11 implementation) via WebSocket
+  and relays QQ messages between the bot and the Hermes agent.
+
+  Supports private and group messages, image/voice/video sending,
+  automatic reconnection, message deduplication, rate limiting, dynamic
+  whitelist management, multi-account operation, SSRF protection,
+  file content auto-injection, and approval system integration.
+
+  Security: DNS-resolved IP blocklist for SSRF, allowlist-based file
+  injection (64KB limit), constant-time token comparison, path traversal
+  prevention, concurrent task limits per chat.
+
+  Multi-Account Mode:
+  Configure multiple NapCat instances under onebot.extra.accounts.
+  Each account gets its own WebSocket connection, allowed_users list,
+  and isolated chat sessions (chat IDs are prefixed with account name).
+
+  Example config.yaml (multi-account):
+    gateway:
+      platforms:
+        onebot:
+          enabled: true
+          extra:
+            accounts:
+              - name: "main"
+                ws_url: "ws://127.0.0.1:3001"
+                allowed_users: ["YOUR_QQ_ID"]
+                home_channel: "private_YOUR_QQ_ID"
+              - name: "work"
+                ws_url: "ws://127.0.0.1:3002"
+                allowed_users: ["YOUR_QQ_ID"]
+                home_channel: "private_YOUR_QQ_ID"
+
+  Whitelist Management Commands (admin only):
+  - /adduser <QQ号> - 添加用户到白名单
+  - /removeuser <QQ号> - 从白名单移除用户
+  - /listusers - 查看当前白名单
+  - /addgroup <群号> - 添加群到白名单
+  - /rmgroup <群号> - 从白名单移除群
+  - /listgroups - 查看群白名单
+  - /settool on|off - 工具调用提示开关
+  - /setmd on|off - Markdown清理开关
+  - /setallowall on|off - 允许所有人开关
+  - /config - 查看当前配置
+author: hermes-user
+requires_env: []
+optional_env:
+  - name: ONEBOT_WS_URL
+    description: "NapCat WebSocket URL (e.g. ws://127.0.0.1:3001). Required for single-account mode; not needed when using accounts list."
+    prompt: "NapCat WebSocket URL (single-account mode)"
+    password: false
+  - name: ONEBOT_ACCESS_TOKEN
+    description: "Access token for NapCat authentication (optional)"
+    prompt: "Access token (optional)"
+    password: true
+  - name: ONEBOT_ALLOWED_USERS
+    description: "Comma-separated QQ numbers allowed to talk to the bot"
+    prompt: "Allowed QQ numbers (comma-separated, optional)"
+    password: false
+  - name: ONEBOT_ALLOW_ALL_USERS
+    description: "Allow anyone to talk to the bot (true/false)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ONEBOT_HOME_CHANNEL
+    description: "Default chat for cron/notification delivery (QQ number or group number)"
+    prompt: "Home channel (QQ/group number, optional)"
+    password: false
+  - name: ONEBOT_GROUP_IDS
+    description: "Comma-separated group IDs the bot should respond in"
+    prompt: "Group IDs (comma-separated, optional)"
+    password: false
+  - name: ONEBOT_HTTP_API_URL
+    description: "HTTP API endpoint URL for the OneBot implementation (e.g. http://127.0.0.1:3000). Used as a fallback/preferred channel for image sends and file downloads, avoiding WS timeout issues in reverse mode."
+    prompt: "HTTP API URL (optional, improves image sending reliability)"
+    password: false
+  - name: ONEBOT_WS_MODE
+    description: "WebSocket connection mode: 'forward' (Hermes connects to NapCat) or 'reverse' (NapCat connects to Hermes)"
+    prompt: "WebSocket mode (forward/reverse, default: forward)"
+    password: false
+  - name: ONEBOT_ADMIN_QQ
+    description: "Admin QQ number authorized to use management commands (e.g. /adduser, /settool)"
+    prompt: "Admin QQ number (optional, defaults to first allowed user)"
+    password: false
+
