@@ -1671,17 +1671,19 @@ class CommandMixin:
     def _register_commands(self):
         _lm = self._cmd_list_mutate
         cmds = [
+            ("/help", self._cmd_help, False),
+            ("/onebot", self._cmd_help, False),
+            ("/config", self._cmd_config, True),
+            ("/status", self._cmd_config, True),
             ("/adduser", functools.partial(_lm, entity_type="user", action="add"), True),
             ("/removeuser", functools.partial(_lm, entity_type="user", action="remove"), True),
             ("/listusers", functools.partial(_lm, entity_type="user", action="list"), True),
-            ("/help", self._cmd_help, False),
             ("/addgroup", functools.partial(_lm, entity_type="group", action="add"), True),
             ("/rmgroup", functools.partial(_lm, entity_type="group", action="remove"), True),
             ("/listgroups", functools.partial(_lm, entity_type="group", action="list"), True),
             ("/settool", self._cmd_settool, True),
             ("/setmd", self._cmd_setmd, True),
             ("/setallowall", self._cmd_setallowall, True),
-            ("/config", self._cmd_config, True),
         ]
         for name, handler, admin in cmds:
             self._commands[name] = _CmdDef(name, handler, admin_only=admin)
@@ -1751,16 +1753,61 @@ class CommandMixin:
         else:
             await _reply(f"✗ 移除失败，{entity_label}可能不存在")
     async def _cmd_help(self, conn, data, args, user_id, admin_qq):
-        msg = (
-            "📋 指令列表\n"
-            "【查询】/config 当前配置\n"
-            "【管理】/adduser <QQ> 加人 | /removeuser <QQ> 删人 | /listusers 白名单\n"
-            "【群聊】/addgroup <群号> | /rmgroup <群号> | /listgroups\n"
-            "【开关】/settool on|off 工具提示 | /setmd on|off 去Markdown\n"
-            "/setallowall on|off 允许所有人\n"
-            "【Hermes】/approve 批准 | /deny 拒绝 | /new 新会话 | /stop 停止 | /model 切换模型"
-        )
-        await self._send_reply_async_conn(conn, data, msg)
+        topic = args.strip().lower()
+        sections = {
+            "basic": [
+                "基础",
+                "/help  查看指令总览",
+                "/onebot  查看OneBot插件帮助",
+                "/config  查看当前聊天配置",
+                "/status  同/config",
+            ],
+            "access": [
+                "权限与白名单",
+                "/adduser <QQ号>  加入用户白名单",
+                "/removeuser <QQ号>  移出用户白名单",
+                "/listusers  查看用户白名单",
+                "/addgroup <群号>  加入群白名单",
+                "/rmgroup <群号>  移出群白名单",
+                "/listgroups  查看群白名单",
+                "/setallowall on|off  是否允许所有人使用",
+            ],
+            "display": [
+                "显示与体验",
+                "/settool on|off  工具调用提示",
+                "/setmd on|off  Markdown清理",
+            ],
+            "media": [
+                "消息能力",
+                "图片  直接发图或使用 MEDIA:本地路径",
+                "语音  支持record和本地音频发送",
+                "视频  支持video和本地视频发送",
+                "文件  支持群文件上传和内容注入",
+                "引用  可解析回复内容与被引用文件",
+                "戳一戳  可用于审批危险命令",
+            ],
+            "hermes": [
+                "Hermes常用",
+                "/approve  批准待执行操作",
+                "/deny  拒绝待执行操作",
+                "/new  开新会话",
+                "/stop  停止当前任务",
+                "/model  切换模型",
+                "/restart  重启gateway",
+            ],
+        }
+        aliases = {"admin": "access", "perm": "access", "config": "basic", "media": "media", "display": "display", "hermes": "hermes"}
+        if topic in aliases:
+            keys = [aliases[topic]]
+        else:
+            keys = ["basic", "access", "display", "media", "hermes"]
+        lines = ["OneBot指令中心", "用法：/help media 或 /help admin", ""]
+        for key in keys:
+            section = sections[key]
+            lines.append(f"【{section[0]}】")
+            lines.extend(f"  {item}" for item in section[1:])
+            lines.append("")
+        await self._send_reply_async_conn(conn, data, "\n".join(lines).rstrip())
     async def _persist_group_ids(self, conn):
         await self._persist_account_setting(conn, "group_ids_by_account", conn.group_ids)
     async def _cmd_toggle_setting(self, conn, data, args, setting_key, label, cmd_name, is_global=False):
@@ -1798,26 +1845,34 @@ class CommandMixin:
         _cfg_chat_id = _make_chat_id(data, account_name)
         cs = self._plugin_settings.get_chat(_cfg_chat_id)
         gs = self._plugin_settings.get_chat("_global")
-        lines = [f"📋 配置 — {_cfg_chat_id}\n"]
-        for key, label in [("tool_progress", "工具调用提示"),
-                           ("strip_markdown", "Markdown清理")]:
-            val = cs.get(key)
-            lines.append(f"• {label}: {'开启' if val else ('关闭' if val is not None else '默认')}")
+        def _state(v, default="默认"):
+            if v is None:
+                return default
+            return "开启" if v else "关闭"
         allow_all_accounts = gs.get("allow_all_by_account", {})
         conn_allow_all = allow_all_accounts.get(conn.name, conn.allow_all)
-        lines.append(f"• 允许所有人使用: {'开启' if conn_allow_all else '关闭'}")
-        lines.append(f"• 显示QQ号: {'开启' if self._show_qq_id else '关闭'}")
-        if conn.http_api_url:
-            lines.append(f"• HTTP API: {conn.http_api_url}")
-        lines.append(f"• 主页频道: {conn.home_channel or '未设置'}")
-        if conn.group_ids:
-            lines.append(f"• 群白名单: {', '.join(conn.group_ids)}")
-        else:
-            lines.append("• 群白名单: 未限制（所有群均可用）")
-        if conn.allowed_users:
-            lines.append(f"• 用户白名单: {', '.join(conn.allowed_users)}")
-        else:
-            lines.append("• 用户白名单: 未限制（所有用户均可用）")
+        lines = [
+            "OneBot当前配置",
+            f"聊天：{_cfg_chat_id}",
+            f"账号：{conn.name}",
+            "",
+            "【开关】",
+            f"  工具调用提示：{_state(cs.get('tool_progress'))}",
+            f"  Markdown清理：{_state(cs.get('strip_markdown'))}",
+            f"  允许所有人：{'开启' if conn_allow_all else '关闭'}",
+            f"  显示QQ号：{'开启' if self._show_qq_id else '关闭'}",
+            "",
+            "【连接】",
+            f"  WebSocket：{conn.ws_mode}",
+            f"  HTTP API：{'已配置' if conn.http_api_url else '未配置'}",
+            f"  主页频道：{conn.home_channel or '未设置'}",
+            "",
+            "【权限】",
+            f"  群白名单：{', '.join(conn.group_ids) if conn.group_ids else '未限制'}",
+            f"  用户白名单：{', '.join(conn.allowed_users) if conn.allowed_users else '未限制'}",
+            "",
+            "提示：输入 /help 查看可用指令",
+        ]
         await self._send_reply_async_conn(conn, data, "\n".join(lines))
 def _result_to_send_result(result: dict, action_name: str, extract_msg_id: bool = False) -> SendResult:
     if result.get("retcode") == 0:
