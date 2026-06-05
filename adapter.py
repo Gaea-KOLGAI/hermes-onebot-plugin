@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from urllib.parse import urlparse, unquote as url_unquote
 import hmac
 import ipaddress
-import socket
 import urllib.request
 import urllib.error
 logger = logging.getLogger(__name__)
@@ -374,6 +373,9 @@ def _parse_chat_id(chat_id: str) -> Tuple[str, str]:
     elif chat_id.startswith("private_"):
         return ("private", chat_id[8:])
     return ("private", chat_id)
+
+def _onebot_target_key(msg_kind: str) -> str:
+    return "group_id" if msg_kind == "group" else "user_id"
 def _extract_account_from_chat_id(chat_id: str) -> str:
     if ":" in chat_id:
         parts = chat_id.split(":", 1)
@@ -889,7 +891,9 @@ class ConnectionMixin:
                     pass
                 return
         else:
-            logger.warning("Reverse WS connection accepted without authentication token")
+            if "reverse_ws_no_token" not in conn._warnings:
+                logger.info("OneBot reverse WebSocket has no access token; accepting local NapCat connections")
+                conn._warnings.add("reverse_ws_no_token")
         conn.ws = websocket
         conn.reverse_ws_clients.add(websocket)
         conn.connected_since = time.time()
@@ -1734,11 +1738,25 @@ class SendMixin:
     def _cleanup_echo(conn: _NapCatConnection, echo: str):
         conn.echo_futures.pop(echo, None)
         conn._echo_timestamps.pop(echo, None)
+    async def _wait_for_ready_ws_conn(self, conn: _NapCatConnection, timeout: float = 10.0):
+        """Wait briefly for reverse-WS NapCat clients before outbound sends."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            ws = conn.ws
+            if ws and getattr(ws, "close_code", None) is None:
+                return ws
+            await asyncio.sleep(0.25)
+        return conn.ws
+
     async def _send_action_conn(self, conn: _NapCatConnection, action: str, params: dict, timeout: float = 15.0) -> dict:
         if action in self._unsupported_actions:
             return {"status": "failed", "retcode": 1, "msg": f"action '{action}' not supported by this NapCat version"}
         ws = conn.ws
-        if not ws or ws.close_code is not None:
+        if (not ws or getattr(ws, "close_code", None) is not None) and conn.ws_mode == "reverse":
+            ws = await self._wait_for_ready_ws_conn(conn)
+        if not ws or getattr(ws, "close_code", None) is not None:
+            if conn.http_api_url:
+                return await self._http_call_conn(conn, action, params)
             return {"status": "failed", "retcode": -1, "msg": "not connected"}
         echo = str(uuid.uuid4())
         payload = {"action": action, "params": params, "echo": echo}
@@ -1800,18 +1818,28 @@ class SendMixin:
             return {"status": "failed", "retcode": -1, "msg": str(e)}
     def _send_msg_params(self, msg_kind: str, target_id: str, message_segments: list) -> Tuple[str, dict]:
         tid = _safe_int(target_id, "target_id")
-        key = "group_id" if msg_kind == "group" else "user_id"
-        return (f"send_{msg_kind}_msg", {key: tid, "message": message_segments})
+        return (f"send_{msg_kind}_msg", {_onebot_target_key(msg_kind): tid, "message": message_segments})
     def _should_quote(self, chat_id: str, reply_to: Optional[str]) -> Optional[str]:
         if not reply_to:
             return None
         receive_seq = self._msg_receive_seq.get(reply_to)
         if receive_seq is None:
             return None
-        current_seq = self._chat_msg_seq.get(chat_id, 0)
-        if current_seq > receive_seq:
-            return reply_to
-        return None
+        return reply_to if self._chat_msg_seq.get(chat_id, 0) > receive_seq else None
+
+    def _message_with_optional_reply(self, chat_id: str, reply_to: Optional[str], *segments: dict) -> List[dict]:
+        message = []
+        quoted = self._should_quote(chat_id, reply_to)
+        if quoted:
+            message.append({"type": "reply", "data": {"id": str(quoted)}})
+        message.extend(segments)
+        return message
+
+    async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 15.0) -> dict:
+        conn = self._get_conn_for_chat(chat_id)
+        msg_kind, target_id = _parse_chat_id(chat_id)
+        action, params = self._send_msg_params(msg_kind, target_id, segments)
+        return await self._send_action_conn(conn, action, params, timeout=timeout)
     async def send(
         self,
         chat_id: str,
@@ -1819,8 +1847,6 @@ class SendMixin:
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        conn = self._get_conn_for_chat(chat_id)
-        msg_kind, target_id = _parse_chat_id(chat_id)
         if chat_id not in getattr(self, '_in_edit_resend_count', {}) or getattr(self, '_in_edit_resend_count', {}).get(chat_id, 0) <= 0:
             _progress_map = getattr(self, '_last_progress_msg', None)
             if _progress_map is not None:
@@ -1835,13 +1861,10 @@ class SendMixin:
             return SendResult(success=True)
         if settings.get("strip_markdown", True):
             content = self.format_message(content)
-        reply_to = self._should_quote(chat_id, reply_to)
-        message_segments = []
-        if reply_to:
-            message_segments.append({"type": "reply", "data": {"id": str(reply_to)}})
-        message_segments.append({"type": "text", "data": {"text": content}})
-        action, params = self._send_msg_params(msg_kind, target_id, message_segments)
-        result = await self._send_action_conn(conn, action, params)
+        message_segments = self._message_with_optional_reply(
+            chat_id, reply_to, {"type": "text", "data": {"text": content}}
+        )
+        result = await self._send_chat_segments(chat_id, message_segments)
         if result.get("retcode") != 0:
             logger.debug("Send failed: retcode=%s", result.get("retcode"))
         return _result_to_send_result(result, "send", extract_msg_id=True)
@@ -1889,9 +1912,8 @@ class SendMixin:
         tid = _safe_target_id(target_id)
         if isinstance(tid, SendResult):
             return tid
-        id_key = "group_id" if msg_kind == "group" else "user_id"
         action = "upload_group_file" if msg_kind == "group" else "upload_private_file"
-        params = {id_key: tid, "file": file_uri, "name": name}
+        params = {_onebot_target_key(msg_kind): tid, "file": file_uri, "name": name}
         result = await self._send_action_conn(conn, action, params, timeout=60.0)
         return _result_to_send_result(result, "send_document")
     async def send_poke(self, chat_id: str, user_id: str) -> SendResult:
@@ -2040,21 +2062,17 @@ class SendMixin:
                           caption: str = None, reply_to: str = None, timeout: float = 30.0) -> SendResult:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
-        reply_to = self._should_quote(chat_id, reply_to)
-        message = []
-        if reply_to:
-            message.append({"type": "reply", "data": {"id": str(reply_to)}})
-        message.append({"type": seg_type, "data": {"file": file_val}})
+        segments = [{"type": seg_type, "data": {"file": file_val}}]
         if caption:
-            message.append({"type": "text", "data": {"text": caption}})
+            segments.append({"type": "text", "data": {"text": caption}})
+        message = self._message_with_optional_reply(chat_id, reply_to, *segments)
         if seg_type == "image" and conn.http_api_url:
             try:
                 tid = _safe_target_id(target_id)
                 if isinstance(tid, SendResult):
                     return tid
-                id_key = "group_id" if msg_kind == "group" else "user_id"
                 action = f"send_{msg_kind}_msg"
-                params = {id_key: tid, "message": message}
+                params = {_onebot_target_key(msg_kind): tid, "message": message}
                 result = await self._http_call_conn(conn, action, params)
                 retcode = result.get("retcode", -1)
                 if retcode in (0, 200):
@@ -2081,7 +2099,6 @@ class SendMixin:
         tid = _safe_target_id(target_id)
         if isinstance(tid, SendResult):
             return tid
-        now_ts = int(time.time())
         nodes = []
         for msg in messages:
             content = msg.get("content", "")
@@ -2094,9 +2111,8 @@ class SendMixin:
             }})
         if not nodes:
             return SendResult(success=False, error="No messages to forward")
-        id_key = "group_id" if msg_kind == "group" else "user_id"
         action = f"send_{msg_kind}_forward_msg"
-        result = await self._send_action_conn(conn, action, {id_key: tid, "messages": nodes}, timeout=30.0)
+        result = await self._send_action_conn(conn, action, {_onebot_target_key(msg_kind): tid, "messages": nodes}, timeout=30.0)
         if result.get("retcode") == 0:
             d = result.get("data", {})
             return SendResult(success=True, message_id=str(d.get("message_id", "") or d.get("forward_id", "")))
@@ -2318,10 +2334,15 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
             except Exception:
                 pass
         return {"name": name, "type": chat_type}
+def _config_extra(config) -> dict:
+    if isinstance(config, dict):
+        return config.get("extra", {}) or {}
+    return getattr(config, "extra", {}) or {}
+
 def check_requirements() -> bool:
     return WEBSOCKETS_AVAILABLE
 def validate_config(config) -> bool:
-    extra = getattr(config, "extra", {}) or {}
+    extra = _config_extra(config)
     accounts = extra.get("accounts", [])
     if isinstance(accounts, list) and accounts:
         for i, acct in enumerate(accounts):
@@ -2338,7 +2359,7 @@ def validate_config(config) -> bool:
         return False
     return True
 def is_configured(config) -> bool:
-    extra = getattr(config, "extra", {}) or {}
+    extra = _config_extra(config)
     accounts = extra.get("accounts", [])
     if isinstance(accounts, list) and accounts:
         return True
