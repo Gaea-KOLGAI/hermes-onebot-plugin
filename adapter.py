@@ -2468,9 +2468,13 @@ class SendMixin:
             return SendResult(success=True, message_id=str(d.get("message_id", "") or d.get("forward_id", "")))
         return SendResult(success=False, error=result.get("msg", "send_forward_message failed"))
 _APPROVAL_CHOICES = {
-    "1": "once", "approve": "once", "批准": "once", "y": "once", "yes": "once",
-    "2": "always", "approve always": "always", "永久批准": "always", "always": "always",
-    "3": "deny", "deny": "deny", "拒绝": "deny", "n": "deny", "no": "deny",
+    "1": "once", "approve": "once", "批准": "once", "批准一次": "once", "单次批准": "once",
+    "once": "once", "y": "once", "yes": "once",
+    "2": "session", "session": "session", "approve session": "session",
+    "会话批准": "session", "本会话批准": "session",
+    "3": "always", "always": "always", "approve always": "always",
+    "永久批准": "always",
+    "4": "deny", "deny": "deny", "拒绝": "deny", "n": "deny", "no": "deny",
 }
 _UPDATE_CHOICES = {
     "1": "y", "y": "y", "yes": "y", "是": "y", "确认": "y",
@@ -2495,7 +2499,11 @@ class ApprovalMixin:
             f"⚠️ 危险命令审批:\n"
             f"命令: {cmd_preview}\n"
             f"原因: {description}\n"
-            f"戳一戳我批准一次 / 回复1批准 / 回复2永久批准 / 回复3拒绝"
+            f"戳一戳我批准一次\n"
+            f"回复1 单次批准\n"
+            f"回复2 会话批准\n"
+            f"回复3 永久批准\n"
+            f"回复4 拒绝"
         )
         reply_to = self._last_msg_id.get(chat_id)
         result = await self.send(chat_id, msg, reply_to=reply_to)
@@ -2548,7 +2556,12 @@ class ApprovalMixin:
         try:
             from tools.approval import resolve_gateway_approval
             resolve_gateway_approval(session_key, choice)
-            choice_text = {"once": "批准一次", "always": "永久批准", "deny": "已拒绝"}
+            choice_text = {
+                "once": "单次批准",
+                "session": "会话批准",
+                "always": "永久批准",
+                "deny": "已拒绝",
+            }
             await self.send(chat_id, f"✓ {choice_text.get(choice, choice)}")
             return True
         except Exception as e:

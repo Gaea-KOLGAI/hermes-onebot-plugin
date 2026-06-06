@@ -197,12 +197,13 @@ MEDIA:/tmp/example.png
 
 支持方式：
 
-- 回复 `1` 批准一次
-- 回复 `2` 永久批准
-- 回复 `3` 拒绝
-- 戳一戳机器人可批准一次
+- 戳一戳机器人：单次批准
+- 回复 `1`：单次批准
+- 回复 `2`：会话批准
+- 回复 `3`：永久批准
+- 回复 `4`：拒绝
 
-群聊里的戳一戳会优先匹配当前群的待审批任务，不会只查私聊。
+群聊里的戳一戳会优先匹配当前群的待审批任务，不会只查私聊。这个映射与 Hermes 审批系统的 `once`、`session`、`always`、`deny` 对齐。
 
 ## 安全设计
 
@@ -225,7 +226,7 @@ MEDIA:/tmp/example.png
 
 保留 `send_poke`、`send_emoji_reaction`、`send_forward_message` 等扩展发送方法。它们属于插件对外能力，可能被 Gateway 或外部调用方动态使用，不按死代码处理。
 
-适配器当前约 2872 行。更新后需至少通过 `py_compile` 和 `test_full_chain.py`。
+适配器当前约 2885 行。更新后需至少通过 `py_compile` 和 `test_full_chain.py`。
 
 ## 环境变量
 
