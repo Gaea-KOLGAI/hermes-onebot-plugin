@@ -741,6 +741,25 @@ try:
 except Exception as e:
     fail("审批权限检查", str(e))
 
+# #2 审批选项对齐 Hermes: once/session/always/deny
+try:
+    from adapter import _APPROVAL_CHOICES
+    expected = {
+        "1": "once",
+        "2": "session",
+        "3": "always",
+        "4": "deny",
+        "批准一次": "once",
+        "会话批准": "session",
+        "永久批准": "always",
+        "拒绝": "deny",
+    }
+    for key, value in expected.items():
+        assert _APPROVAL_CHOICES.get(key) == value, f"{key} 应映射到 {value}, 实际 {_APPROVAL_CHOICES.get(key)}"
+    ok("审批选项映射对齐 Hermes once/session/always/deny")
+except Exception as e:
+    fail("审批选项映射", str(e))
+
 # #3 空允许列表 - is_user_authorized 改为 deny
 try:
     conn = _NapCatConnection(
