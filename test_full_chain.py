@@ -3,7 +3,7 @@
 OneBot 适配器全链路端到端测试
 覆盖: 消息解析 / 安全过滤 / 缓存 / 限流 / 发送 / 新特性
 """
-import sys, os, asyncio, re, json, time, tempfile, pathlib, socket, struct, inspect
+import sys, os, asyncio, re, json, time, tempfile, pathlib, socket, struct, inspect, ast, textwrap
 
 # 确保能导入插件模块和gateway
 HERMES_SRC = pathlib.Path.home() / '.hermes' / 'hermes-agent'
@@ -895,6 +895,22 @@ try:
     ok("send_document 默认沿用出站本地路径限制")
 except Exception as e:
     fail("send_document 出站路径限制", str(e))
+
+try:
+    dispatch_src = textwrap.dedent(inspect.getsource(SendMixin._send_media_path))
+    assert "senders =" in dispatch_src
+    assert ast.dump(ast.parse(dispatch_src)).count("If(") <= 1
+    ok("媒体发送路径使用表驱动分发")
+except Exception as e:
+    fail("媒体发送表驱动", str(e))
+
+try:
+    sub_src = textwrap.dedent(inspect.getsource(CommandMixin._cmd_onebot))
+    assert ast.dump(ast.parse(sub_src)).count("If(") <= 2
+    assert "routes" in sub_src or "_ONEBOT_SUBCOMMANDS" in sub_src
+    ok("/onebot 子命令使用表驱动分发")
+except Exception as e:
+    fail("/onebot 表驱动", str(e))
 
 try:
     adapter_obj = object.__new__(OneBotAdapter)

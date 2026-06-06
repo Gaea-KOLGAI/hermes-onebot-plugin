@@ -106,6 +106,11 @@ _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv", ".m4v"})
 _VOICE_EXTS = frozenset({".silk", ".amr", ".spx"})
 _AUDIO_EXTS = frozenset({".mp3", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".flac"})
+_MEDIA_KIND_EXTS = {
+    "voice": _AUDIO_EXTS | _VOICE_EXTS | frozenset({".oga"}),
+    "video": _VIDEO_EXTS,
+    "image": _IMAGE_EXTS,
+}
 def _hermes_onebot_data_dir() -> Path:
     try:
         from hermes_constants import get_hermes_home
@@ -226,6 +231,13 @@ def _message_fingerprint(message: Any) -> str:
     except TypeError:
         payload = str(message)
     return hashlib.sha256(payload.encode("utf-8", "ignore")).hexdigest()[:16]
+
+def _guess_media_segment_type(path: str, *, is_voice: bool = False) -> str:
+    if is_voice:
+        return "record"
+    ext = os.path.splitext(urlparse(str(path)).path if "://" in str(path) else str(path))[1].lower()
+    kind_to_segment = {"image": "image", "video": "video", "voice": "record"}
+    return next((kind_to_segment[kind] for kind, exts in _MEDIA_KIND_EXTS.items() if ext in exts), "file")
 
 async def _websockets_connect(uri: str, *, headers: Optional[dict] = None, timeout: float = 15.0, **kwargs):
     connect_kwargs = {**kwargs}
@@ -1773,16 +1785,24 @@ class CommandMixin:
         parts = args.strip().split(maxsplit=1)
         sub = parts[0].lower() if parts else "help"
         rest = parts[1] if len(parts) > 1 else ""
-        if sub in ("", "help", "h", "?"):
-            await self._cmd_help(conn, data, rest, user_id, admin_qq)
+        routes = {
+            "": (self._cmd_help, False),
+            "help": (self._cmd_help, False),
+            "h": (self._cmd_help, False),
+            "?": (self._cmd_help, False),
+            "config": (self._cmd_config, True),
+            "status": (self._cmd_config, True),
+            "cfg": (self._cmd_config, True),
+        }
+        route = routes.get(sub)
+        if not route:
+            await self._send_reply_async_conn(conn, data, "✗ 未知OneBot子命令。用 /onebot help 查看")
             return
-        if sub in ("config", "status", "cfg"):
-            if user_id != admin_qq:
-                await self._send_reply_async_conn(conn, data, "✗ 只有管理员可以执行此命令")
-                return
-            await self._cmd_config(conn, data, rest, user_id, admin_qq)
+        handler, admin_only = route
+        if admin_only and user_id != admin_qq:
+            await self._send_reply_async_conn(conn, data, "✗ 只有管理员可以执行此命令")
             return
-        await self._send_reply_async_conn(conn, data, "✗ 未知OneBot子命令。用 /onebot help 查看")
+        await handler(conn, data, rest, user_id, admin_qq)
     async def _cmd_list_mutate(self, conn, data, args, user_id, admin_qq,
                                 entity_type: str, action: str):
         labels = {"user": ("白名单", "用户", "QQ号", "adduser", "removeuser"),
@@ -1791,47 +1811,62 @@ class CommandMixin:
         _reply = lambda msg: self._send_reply_async_conn(conn, data, msg)
         get_list = conn.list_allowed_users if entity_type == "user" else lambda: list(conn.group_ids)
         persist = self._persist_allowed_users if entity_type == "user" else self._persist_group_ids
-        if action == "list":
-            items = get_list()
-            msg = f"当前{list_label}：\n" + "\n".join(f"• {u}" for u in items) if items else f"{list_label}为空"
-            await _reply(msg)
-            return
         val = args.strip()
+        handlers = {
+            "list": self._handle_list_command,
+            "add": self._handle_add_command,
+            "remove": self._handle_remove_command,
+        }
+        await handlers[action](
+            conn, val, _reply, persist, get_list,
+            list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq,
+        )
+
+    async def _handle_list_command(self, conn, val, reply, persist, get_list,
+                                   list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq):
+        items = get_list()
+        msg = f"当前{list_label}：\n" + "\n".join(f"• {u}" for u in items) if items else f"{list_label}为空"
+        await reply(msg)
+
+    async def _handle_add_command(self, conn, val, reply, persist, get_list,
+                                  list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq):
         if not val:
-            await _reply(f"✗ 用法: /{add_cmd if action == 'add' else rm_cmd} <{id_label}>")
+            await reply(f"✗ 用法: /{add_cmd} <{id_label}>")
             return
-        if entity_type == "group":
-            if action == "add":
-                if not val.isdigit():
-                    await _reply(f"✗ {id_label}格式错误")
-                elif val not in conn.group_ids:
-                    conn.group_ids.append(val)
-                    await persist(conn)
-                    await _reply(f"✓ 已添加{entity_label} {val}")
-                else:
-                    await _reply(f"✗ {entity_label} {val} 已在{list_label}中")
-            elif val in conn.group_ids:
-                conn.group_ids.remove(val)
-                await persist(conn)
-                await _reply(f"✓ 已移除{entity_label} {val}")
-            else:
-                await _reply(f"✗ {entity_label} {val} 不在{list_label}中")
+        items = get_list()
+        if id_label == "群号" and not val.isdigit():
+            await reply(f"✗ {id_label}格式错误")
             return
-        add_fn = conn.add_allowed_user
-        remove_fn = conn.remove_allowed_user
-        if action == "add":
-            if add_fn(val):
-                await persist(conn)
-                await _reply(f"✓ 已添加{entity_label} {val} 到{list_label}")
-            else:
-                await _reply(f"✗ 添加失败，{entity_label}可能已存在或格式错误")
-        elif val == admin_qq:
-            await _reply("✗ 不能移除管理员账户")
-        elif remove_fn(val):
-            await persist(conn)
-            await _reply(f"✓ 已从{list_label}移除{entity_label} {val}")
+        if val in items:
+            await reply(f"✗ {entity_label} {val} 已在{list_label}中")
+            return
+        if id_label == "QQ号" and not conn.add_allowed_user(val):
+            await reply(f"✗ 添加失败，{entity_label}可能已存在或格式错误")
+            return
+        if id_label == "群号":
+            conn.group_ids.append(val)
+        await persist(conn)
+        suffix = f" 到{list_label}" if id_label == "QQ号" else ""
+        await reply(f"✓ 已添加{entity_label} {val}{suffix}")
+
+    async def _handle_remove_command(self, conn, val, reply, persist, get_list,
+                                     list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq):
+        if not val:
+            await reply(f"✗ 用法: /{rm_cmd} <{id_label}>")
+            return
+        if val == admin_qq:
+            await reply("✗ 不能移除管理员账户")
+            return
+        items = get_list()
+        if val not in items:
+            await reply(f"✗ {entity_label} {val} 不在{list_label}中" if id_label == "群号" else f"✗ 移除失败，{entity_label}可能不存在")
+            return
+        if id_label == "QQ号":
+            conn.remove_allowed_user(val)
         else:
-            await _reply(f"✗ 移除失败，{entity_label}可能不存在")
+            conn.group_ids.remove(val)
+        await persist(conn)
+        await reply(f"✓ 已从{list_label}移除{entity_label} {val}" if id_label == "QQ号" else f"✓ 已移除{entity_label} {val}")
     async def _cmd_help(self, conn, data, args, user_id, admin_qq):
         topic = args.strip().lower()
         sections = {
@@ -2089,12 +2124,11 @@ class SendMixin:
             return "document"
         mime, _ = mimetypes.guess_type(path)
         ext = self._media_extension(path)
-        if force_voice or (mime and mime.startswith("audio/")) or ext in {".mp3", ".wav", ".ogg", ".oga", ".opus", ".m4a", ".amr", ".silk", ".flac"}:
+        if force_voice:
             return "voice"
-        if (mime and mime.startswith("video/")) or ext in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}:
-            return "video"
-        if (mime and mime.startswith("image/")) or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
-            return "image"
+        for kind, exts in _MEDIA_KIND_EXTS.items():
+            if ext in exts or (mime and mime.startswith(f"{kind}/")):
+                return kind
         return "document"
 
     def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
@@ -2119,13 +2153,15 @@ class SendMixin:
         force_voice: bool = False, as_document: bool = False,
     ) -> SendResult:
         kind = self._classify_media_path(media_path, force_voice=force_voice, as_document=as_document)
-        if kind == "voice":
-            return await self.send_voice(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
-        if kind == "video":
-            return await self.send_video(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
-        if kind == "image":
-            return await self.send_image(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
-        return await self.send_document(chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata)
+        senders = {
+            "voice": self.send_voice,
+            "video": self.send_video,
+            "image": self.send_image,
+            "document": self.send_document,
+        }
+        return await senders.get(kind, self.send_document)(
+            chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata
+        )
 
     async def send(
         self,
@@ -2898,16 +2934,8 @@ async def _standalone_send(
     for media_path, is_voice in media_files:
         if not os.path.exists(media_path):
             return {"success": False, "error": f"Media file not found: {media_path}"}
-        ext = os.path.splitext(media_path)[1].lower()
         file_uri = f"file://{os.path.abspath(media_path)}"
-        if ext in _IMAGE_EXTS:
-            seg_type = "image"
-        elif ext in _VIDEO_EXTS:
-            seg_type = "video"
-        elif is_voice or ext in _VOICE_EXTS or ext in _AUDIO_EXTS:
-            seg_type = "record"
-        else:
-            seg_type = "file"
+        seg_type = _guess_media_segment_type(media_path, is_voice=is_voice)
         segments.append({"type": seg_type, "data": {"file": file_uri}})
     if not segments:
         return {"success": False, "error": "No message or media to send"}
