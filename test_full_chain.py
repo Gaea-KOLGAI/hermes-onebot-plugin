@@ -44,7 +44,6 @@ try:
         _extract_forward, _extract_json_card, _extract_xml,
         _extract_typed_segments,
         _make_chat_id, _parse_chat_id, _extract_account_from_chat_id,
-        _sanitize_log,
         _load_gateway_tool_progress_mode, _normalise_tool_progress_mode,
         _save_gateway_tool_progress_mode,
         DedupCache, RateLimiter, MemberCache,
@@ -96,21 +95,8 @@ try:
 except Exception as e:
     fail("_cq_unescape", str(e))
 
-# _sanitize_log
-try:
-    # 基本清理
-    result = _sanitize_log("hello\x1b[31mworld")
-    assert "\x1b" not in result, "ANSI未清理"
-    # 长度截断
-    result = _sanitize_log("a" * 200, max_len=50)
-    assert len(result) <= 50, f"截断失败 长度={len(result)}"
-    ok("_sanitize_log ANSI清理+截断")
-except Exception as e:
-    fail("_sanitize_log", str(e))
-
-
 # ============================================================
-section("3. 消息段提取 (segments)")
+# section("3. 消息段提取 (segments)")
 # ============================================================
 
 # 构造各种CQ码消息段
@@ -604,23 +590,15 @@ section("19. 路径穿越防护")
 # ============================================================
 
 try:
-    # 这个测试检查 MediaCache 是否拒绝穿越路径
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = _MediaCache(pathlib.Path(tmpdir))
-        # get_path 应该拒绝穿越
+        outside = pathlib.Path(tmpdir).parent / "outside.jpg"
+        outside.write_bytes(b"test")
         try:
-            p = cache.get_path("../../etc/passwd")
-            fail("_MediaCache 路径穿越", f"未拦截! got {p}")
-        except ValueError as e:
-            ok(f"_MediaCache 路径穿越防护 (ValueError: {e})")
-
-        # 正常路径应该通过
-        try:
-            p = cache.get_path("image_abc.jpg")
-            assert str(p).startswith(tmpdir), f"正常路径应该在缓存目录内: {p}"
-            ok(f"_MediaCache 正常路径通过: {p}")
-        except Exception as e:
-            fail("_MediaCache 正常路径", str(e))
+            assert cache._validate_local_path(str(outside)) is None
+            ok("_MediaCache 拒绝缓存目录外本地文件")
+        finally:
+            outside.unlink(missing_ok=True)
 except Exception as e:
     fail("路径穿越", str(e))
 
@@ -666,30 +644,6 @@ try:
     ok(f"None输入处理: {repr(result)}")
 except Exception as e:
     fail("None输入", str(e))
-
-# 空字符串sanitize
-try:
-    assert _sanitize_log("") == ""
-    ok("空字符串sanitize")
-except Exception as e:
-    fail("空字符串sanitize", str(e))
-
-# 超长消息ID
-try:
-    result = _sanitize_log("m" * 10000, max_len=100)
-    assert len(result) <= 100
-    ok("超长字符串截断")
-except Exception as e:
-    fail("超长截断", str(e))
-
-# Unicode边界
-try:
-    result = _sanitize_log("🎉🎊🎈" * 50)
-    assert len(result) <= 100  # 默认max_len
-    ok("Unicode emoji截断")
-except Exception as e:
-    fail("Unicode截断", str(e))
-
 
 # ============================================================
 section("22. 代码行数 & 文件完整性")
@@ -786,20 +740,6 @@ try:
     ok("_resolve_approval_shortcut 有 admin 权限检查参数")
 except Exception as e:
     fail("审批权限检查", str(e))
-
-# #2 文件读取黑名单扩展
-try:
-    from adapter import _BLOCKED_PATH_PREFIXES, _is_path_safe
-    assert "/root/" in _BLOCKED_PATH_PREFIXES, "/root/ 未被封"
-    assert "/home/" in _BLOCKED_PATH_PREFIXES, "/home/ 未被封"
-    assert "/etc/" in _BLOCKED_PATH_PREFIXES, "/etc/ 未被封"
-    assert _is_path_safe("/private/secret/id_rsa") == False
-    assert _is_path_safe("/etc/shadow") == False
-    assert _is_path_safe("/tmp/test.txt") == True
-    assert _is_path_safe("/var/log/syslog") == True
-    ok("文件读取白名单: /root/ /home/ /etc/ 等敏感路径被封")
-except Exception as e:
-    fail("文件读取白名单", str(e))
 
 # #3 空允许列表 - is_user_authorized 改为 deny
 try:

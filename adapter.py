@@ -83,8 +83,6 @@ MAX_TITLE_PREVIEW = 80
 MAX_QUOTE_TEXT = 300
 IMAGE_DOWNLOAD_CONCURRENCY = 5
 PENDING_UPDATE_TTL = 300
-HEARTBEAT_CHECK_INTERVAL = 15
-SEQ_CLEANUP_INTERVAL = 60
 FILE_INJECTION_MAX_BYTES = 65536
 SSRF_BLOCKED_NETWORKS = [
     ipaddress.ip_network("127.0.0.0/8"),
@@ -103,6 +101,10 @@ _MSG_TYPE_MAP = {"images": MessageType.PHOTO, "voice_url": MessageType.VOICE, "v
 _TEXT_EXTS = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
               ".log", ".py", ".js", ".ts", ".html", ".css", ".ini", ".cfg",
               ".toml", ".sh", ".bat", ".sql", ".env"})
+_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"})
+_VIDEO_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv", ".m4v"})
+_VOICE_EXTS = frozenset({".silk", ".amr", ".spx"})
+_AUDIO_EXTS = frozenset({".mp3", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".flac"})
 def _hermes_onebot_data_dir() -> Path:
     try:
         from hermes_constants import get_hermes_home
@@ -377,8 +379,8 @@ def _fmt_rps(d):
     return f"[猜拳: {rps_map.get(rid, rid)}]"
 _SEGMENT_FORMATTERS: Dict[str, Callable] = {
     "file": lambda d: (
-        f"[文件: {d.get('name') or d.get('file') or '未知文件'} {(u := d.get('url') or d.get('file_url') or '')}]"
-        if (u := d.get("url") or d.get("file_url") or "").startswith("http")
+        f"[文件: {d.get('name') or d.get('file') or '未知文件'} {d.get('url') or d.get('file_url') or ''}]"
+        if (d.get("url") or d.get("file_url") or "").startswith("http")
         else f"[文件: {d.get('name') or d.get('file') or '未知文件'} (file_id={d.get('file_id') or d.get('id') or ''})]"
         if d.get("file_id") or d.get("id")
         else f"[文件: {d.get('name') or d.get('file') or '未知文件'}]"
@@ -469,15 +471,6 @@ def _guess_ext_from_url(url: str, default: str = ".jpg") -> str:
 _CODEBLOCK_RE = re.compile(r'```[\s\S]*?```')
 _EXCESSIVE_NEWLINES_RE = re.compile(r'\n{3,}')
 
-def _sanitize_log(s: str, max_len: int = 100) -> str:
-    """Strip ANSI escape codes, control characters, and Unicode bidi overrides from log strings."""
-    if not s:
-        return ""
-    s = str(s)
-    s = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', s)
-    s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]', '', s)
-    return s.replace("\n", "\\n").replace("\r", "\\r")[:max_len]
-
 def _format_message(content: str) -> str:
     if not content:
         return content
@@ -491,11 +484,6 @@ def _format_message(content: str) -> str:
         processed = processed.replace(f"\x00CODEBLOCK{i}\x00", block)
     processed = _EXCESSIVE_NEWLINES_RE.sub('\n\n', processed)
     return processed.strip()
-
-_BLOCKED_PATH_PREFIXES = ("/etc/", "/proc/", "/sys/", "/dev/", "/root/", "/home/")
-
-def _is_path_safe(resolved: str) -> bool:
-    return not resolved.startswith(_BLOCKED_PATH_PREFIXES)
 
 class DedupCache:
     def __init__(self, ttl: float = DEDUP_WINDOW_SECONDS, max_size: int = DEDUP_MAX_SIZE):
@@ -578,12 +566,6 @@ class _MediaCache:
         self._max_files = max_files
         self._max_size = max_file_size
         cache_dir.mkdir(parents=True, exist_ok=True)
-    def get_path(self, filename: str) -> Path:
-        candidate = (self._dir / filename).resolve()
-        base = self._dir.resolve()
-        if not (str(candidate) == str(base) or str(candidate).startswith(str(base) + os.sep)):
-            raise ValueError(f"Path traversal blocked: {filename}")
-        return candidate
     def _validate_local_path(self, url: str) -> Optional[str]:
         cache_dir = str(self._dir.resolve())
         if url.startswith("file://"):
@@ -2275,7 +2257,6 @@ class SendMixin:
         file_info = data.get("file") or {}
         name = file_info.get("name") or file_info.get("file") or "未知文件"
         size = file_info.get("size")
-        file_id = file_info.get("id") or file_info.get("file_id") or file_info.get("file") or ""
         file_url = file_info.get("url") or file_info.get("file_url") or ""
         if not file_url:
             file_url = await self._resolve_file_url(file_info, conn)
@@ -2566,7 +2547,7 @@ class ApprovalMixin:
                 return False
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            resolve_gateway_approval(session_key, choice)
             choice_text = {"once": "批准一次", "always": "永久批准", "deny": "已拒绝"}
             await self.send(chat_id, f"✓ {choice_text.get(choice, choice)}")
             return True
