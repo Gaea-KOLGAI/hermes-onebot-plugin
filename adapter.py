@@ -1219,34 +1219,45 @@ class ConnectionMixin:
     async def _process_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
         if "self_id" in data and not conn.self_id:
             conn.self_id = str(data["self_id"])
-        post_type = data.get("post_type", "")
+        if self._resolve_echo_response(conn, data):
+            return
+        handlers = {
+            "meta_event": self._handle_meta_event_conn,
+            "message": self._handle_message_event_conn,
+            "notice": self._handle_notice_event_conn,
+            "request": self._handle_request_event_conn,
+        }
+        handler = handlers.get(data.get("post_type", ""))
+        if handler:
+            await handler(conn, data)
+
+    def _resolve_echo_response(self, conn: _NapCatConnection, data: dict) -> bool:
         echo = data.get("echo")
-        if echo and echo in conn.echo_futures:
-            fut = conn.echo_futures.pop(echo)
-            conn._echo_timestamps.pop(echo, None)
-            if not fut.done():
-                fut.set_result(data)
-            return
-        if post_type == "meta_event":
-            sub = data.get("meta_event_type", "")
-            if sub == "heartbeat":
-                conn.last_heartbeat = time.time()
-            elif sub == "lifecycle":
-                sub_type = data.get("sub_type", "")
-                if sub_type == "connect":
-                    asyncio.create_task(self._fetch_self_info_conn(conn))
-            return
-        if post_type == "message":
-            account_name = conn.name if self._multi_account else ""
-            chat_id = _make_chat_id(data, account_name)
-            self._dispatch_for_chat(chat_id, self._handle_message(data, conn=conn))
-            return
-        if post_type == "notice":
-            self._dispatch_for_chat(f"notice:{data.get('notice_type', '')}", self._handle_notice(data, conn), notice=True)
-            return
-        if post_type == "request":
-            self._dispatch_for_chat(f"request:{data.get('request_type', '')}", self._handle_request(data, conn), notice=True)
-            return
+        if not echo or echo not in conn.echo_futures:
+            return False
+        fut = conn.echo_futures.pop(echo)
+        conn._echo_timestamps.pop(echo, None)
+        if not fut.done():
+            fut.set_result(data)
+        return True
+
+    async def _handle_meta_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
+        sub = data.get("meta_event_type", "")
+        if sub == "heartbeat":
+            conn.last_heartbeat = time.time()
+        elif sub == "lifecycle" and data.get("sub_type", "") == "connect":
+            asyncio.create_task(self._fetch_self_info_conn(conn))
+
+    async def _handle_message_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
+        account_name = conn.name if self._multi_account else ""
+        chat_id = _make_chat_id(data, account_name)
+        self._dispatch_for_chat(chat_id, self._handle_message(data, conn=conn))
+
+    async def _handle_notice_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
+        self._dispatch_for_chat(f"notice:{data.get('notice_type', '')}", self._handle_notice(data, conn), notice=True)
+
+    async def _handle_request_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
+        self._dispatch_for_chat(f"request:{data.get('request_type', '')}", self._handle_request(data, conn), notice=True)
 class MessageMixin:
     async def _handle_message(self, data: dict, conn: Optional[_NapCatConnection] = None):
         if conn is None:
