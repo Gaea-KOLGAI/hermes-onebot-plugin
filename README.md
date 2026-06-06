@@ -122,12 +122,11 @@ gateway:
 
 | 指令 | 说明 | 管理员 |
 |---|---|---|
-| `/help` | 查看指令总览 | 否 |
-| `/onebot` | 查看 OneBot 插件帮助 | 否 |
-| `/help media` | 查看媒体能力说明 | 否 |
-| `/help admin` | 查看管理指令说明 | 否 |
-| `/config` | 查看当前聊天配置 | 是 |
-| `/status` | 同 `/config` | 是 |
+| `/onebot` 或 `/onebot help` | 查看 OneBot 插件帮助 | 否 |
+| `/onebot help media` | 查看媒体能力说明 | 否 |
+| `/onebot help admin` | 查看管理指令说明 | 否 |
+| `/onebot config` | 查看 OneBot 当前聊天配置 | 是 |
+| `/onebot status` | 同 `/onebot config` | 是 |
 | `/adduser <QQ号>` | 添加用户白名单 | 是 |
 | `/removeuser <QQ号>` | 移除用户白名单 | 是 |
 | `/listusers` | 查看用户白名单 | 是 |
@@ -137,6 +136,8 @@ gateway:
 | `/settool on|off` | 直接修改 Gateway 层 `display.platforms.onebot.tool_progress` | 是 |
 | `/setmd on|off` | 开关 Markdown 清理 | 是 |
 | `/setallowall on|off` | 开关允许所有人使用 | 是 |
+
+说明：`/help`、`/config`、`/status` 是 Hermes/Gateway 原生命令；OneBot 插件自己的帮助和配置入口统一放在 `/onebot ...` 下，避免抢占原生命令。
 
 ## 媒体发送
 
