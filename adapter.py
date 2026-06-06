@@ -22,6 +22,7 @@ import hmac
 import ipaddress
 import urllib.request
 import urllib.error
+import hashlib
 logger = logging.getLogger(__name__)
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -180,6 +181,65 @@ def _csv_list(raw: Any) -> List[str]:
 
 DATA_DIR = _hermes_onebot_data_dir()
 MEDIA_CACHE_DIR = DATA_DIR / "media_cache"
+OUTBOUND_FILE_ALLOWED_ROOTS = (MEDIA_CACHE_DIR, Path(tempfile.gettempdir()))
+def _is_ip_blocked(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    return any(ip in net for net in SSRF_BLOCKED_NETWORKS)
+
+def _is_safe_media_download_url(url: str) -> bool:
+    parsed_url = urlparse(str(url or ""))
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+        return False
+    try:
+        addrinfo = socket.getaddrinfo(parsed_url.hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except (socket.gaierror, ValueError) as e:
+        logger.warning("SSRF check failed for %s: %s", url, e)
+        return False
+    for *_, sockaddr in addrinfo:
+        ip_str = sockaddr[0]
+        if _is_ip_blocked(ip_str):
+            logger.warning("SSRF blocked: %s resolves to blocked IP %s", url, ip_str)
+            return False
+    return True
+
+def _is_safe_outbound_local_path(path_or_uri: Any) -> bool:
+    raw = str(path_or_uri or "").strip()
+    if not raw:
+        return False
+    if raw.startswith("file://"):
+        raw = url_unquote(urlparse(raw).path)
+    try:
+        resolved = Path(os.path.expanduser(raw)).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if not resolved.is_file():
+        return False
+    allowed_roots = [Path(root).resolve() for root in OUTBOUND_FILE_ALLOWED_ROOTS]
+    return any(resolved == root or root in resolved.parents for root in allowed_roots)
+
+def _message_fingerprint(message: Any) -> str:
+    try:
+        payload = json.dumps(message, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        payload = str(message)
+    return hashlib.sha256(payload.encode("utf-8", "ignore")).hexdigest()[:16]
+
+async def _websockets_connect(uri: str, *, headers: Optional[dict] = None, timeout: float = 15.0, **kwargs):
+    connect_kwargs = {**kwargs}
+    if headers:
+        connect_kwargs["additional_headers"] = headers
+    try:
+        return await asyncio.wait_for(websockets.connect(uri, **connect_kwargs), timeout=timeout)
+    except TypeError as e:
+        if headers and "additional_headers" in str(e):
+            connect_kwargs.pop("additional_headers", None)
+            connect_kwargs["extra_headers"] = headers
+            return await asyncio.wait_for(websockets.connect(uri, **connect_kwargs), timeout=timeout)
+        raise
+
 def _safe_int(val, label: str = "") -> int:
     try:
         return int(val)
@@ -584,7 +644,7 @@ class _MediaCache:
             return None
         if url.startswith("file://") or url.startswith("/"):
             return self._validate_local_path(url)
-        if not url.startswith("http://") and not url.startswith("https://"):
+        if not _is_safe_media_download_url(url):
             return None
         own_client = False
         client = None
@@ -593,22 +653,6 @@ class _MediaCache:
             client = http_client
             own_client = not bool(http_client)
             if not client:
-                parsed_url = urlparse(url)
-                hostname = parsed_url.hostname
-                if hostname:
-                    try:
-                        # Use getaddrinfo to get all addresses (IPv4+IPv6)
-                        addrinfo = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                        for family, socktype, proto, canonname, sockaddr in addrinfo:
-                            ip_str = sockaddr[0]
-                            ip = ipaddress.ip_address(ip_str)
-                            for net in SSRF_BLOCKED_NETWORKS:
-                                if ip in net:
-                                    logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip)
-                                    return None
-                    except (socket.gaierror, ValueError) as e:
-                        logger.warning("SSRF check failed for %s: %s", url, e)
-                        return None
                 client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
             ext = _guess_ext_from_url(url)
             cache_subdir = self._dir / media_type
@@ -769,12 +813,8 @@ class _PluginSettings:
     def data(self) -> dict:
         return self._data
     def _normalize_key(self, chat_id: str) -> str:
-        """Strip account prefix (e.g. 'main:group_123' -> 'group_123')."""
-        if ":" in chat_id:
-            _, _, suffix = chat_id.partition(":")
-            if suffix.startswith(("group_", "private_")):
-                return suffix
-        return chat_id
+        """Keep account-qualified chat keys isolated across multi-account setups."""
+        return str(chat_id)
     def get_chat(self, chat_id: str) -> dict:
         key = self._normalize_key(chat_id)
         return self._data.get(key, {})
@@ -892,9 +932,8 @@ class ConnectionMixin:
             return False
         headers = {"Authorization": f"Bearer {conn.access_token}"} if conn.access_token else None
         try:
-            conn.ws = await asyncio.wait_for(
-                websockets.connect(conn.ws_url, additional_headers=headers, **_WS_CONNECT_KWARGS),
-                timeout=15.0,
+            conn.ws = await _websockets_connect(
+                conn.ws_url, headers=headers, timeout=15.0, **_WS_CONNECT_KWARGS
             )
         except Exception as e:
             self._set_fatal_if_default(conn, "connect_failed", str(e), retryable=True)
@@ -1249,7 +1288,8 @@ class MessageMixin:
     def _check_duplicate_and_self(self, data: dict, conn) -> bool:
         user_id = str(data.get("user_id", ""))
         message_id = str(data.get("message_id", ""))
-        dedup_key = f"{message_id}_{user_id}_{data.get('time', '')}"
+        msg_part = message_id or _message_fingerprint(data.get("message", data.get("raw_message", "")))
+        dedup_key = f"{msg_part}_{user_id}_{data.get('time', '')}"
         if conn.dedup.is_duplicate(dedup_key):
             return True
         if conn.self_id and user_id == conn.self_id:
@@ -1919,8 +1959,8 @@ class CommandMixin:
             f"  主页频道：{conn.home_channel or '未设置'}",
             "",
             "【权限】",
-            f"  群白名单：{', '.join(conn.group_ids) if conn.group_ids else '未限制'}",
-            f"  用户白名单：{', '.join(conn.allowed_users) if conn.allowed_users else '未限制'}",
+            f"  群白名单：{', '.join(conn.group_ids) if conn.group_ids else '空，拒绝所有群'}",
+            f"  用户白名单：{', '.join(conn.allowed_users) if conn.allowed_users else '空，拒绝所有用户'}",
             "",
             "提示：输入 /help 查看可用指令",
         ]
@@ -2057,11 +2097,17 @@ class SendMixin:
             return "image"
         return "document"
 
-    def _as_onebot_file_value(self, path_or_url: str) -> str:
+    def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
         raw = str(path_or_url).strip()
-        if raw.startswith(("http://", "https://", "file://")):
+        if raw.startswith(("http://", "https://")):
+            return raw
+        if raw.startswith("file://"):
+            if require_safe_local and not _is_safe_outbound_local_path(raw):
+                raise ValueError("local file path is outside allowed outbound media roots")
             return raw
         p = Path(os.path.expanduser(raw)).resolve()
+        if require_safe_local and not _is_safe_outbound_local_path(p):
+            raise ValueError("local file path is outside allowed outbound media roots")
         try:
             return p.as_uri()
         except ValueError:
@@ -2135,7 +2181,11 @@ class SendMixin:
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._send_media(chat_id, "image", self._as_onebot_file_value(image_url), caption, reply_to)
+        try:
+            file_value = self._as_onebot_file_value(image_url)
+        except ValueError as e:
+            return SendResult(success=False, error=str(e))
+        return await self._send_media(chat_id, "image", file_value, caption, reply_to)
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
@@ -2145,7 +2195,10 @@ class SendMixin:
         self, chat_id: str, path: str, seg_type: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, timeout: float = 30.0,
     ) -> SendResult:
-        file_uri = self._as_onebot_file_value(path)
+        try:
+            file_uri = self._as_onebot_file_value(path)
+        except ValueError as e:
+            return SendResult(success=False, error=str(e))
         return await self._send_media(chat_id, seg_type, file_uri, caption, reply_to, timeout=timeout)
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
@@ -2185,7 +2238,11 @@ class SendMixin:
                 return SendResult(success=False, error=f"file not found: {raw_path}")
         name_source = local_path or urlparse(raw_path).path or raw_path
         name = file_name or os.path.basename(name_source) or "file"
-        file_uri = raw_path if is_url else self._as_onebot_file_value(local_path)
+        try:
+            trusted_local = bool((metadata or {}).get("trusted_local_file"))
+            file_uri = raw_path if is_url else self._as_onebot_file_value(local_path, require_safe_local=not trusted_local)
+        except ValueError as e:
+            return SendResult(success=False, error=str(e))
         tid = _safe_target_id(target_id)
         if isinstance(tid, SendResult):
             return tid
@@ -2300,7 +2357,7 @@ class SendMixin:
                 admin_qq = os.getenv("ONEBOT_ADMIN_QQ") or conn.admin_qq or (conn.allowed_users[0] if conn.allowed_users else None)
                 for chat_id in candidate_chat_ids:
                     is_admin_approval = self._pending_approval_admin.get(chat_id, False)
-                    if is_admin_approval and admin_qq and str(poker_id) != str(admin_qq):
+                    if is_admin_approval and (not admin_qq or str(poker_id) != str(admin_qq)):
                         continue
                     if chat_id in self._pending_approvals:
                         await self._resolve_approval_shortcut(chat_id, "1", poker_id, admin_qq)
@@ -2437,7 +2494,7 @@ class SendMixin:
         if retcode == -1:
             msg = result.get("msg", "")
             if "timeout" in msg.lower():
-                return SendResult(success=True)
+                return SendResult(success=False, error="send timeout; delivery not confirmed", retryable=True)
         return _result_to_send_result(result, f"send_{seg_type}", extract_msg_id=True)
     async def send_forward_message(
         self, chat_id: str, messages: List[Dict[str, Any]],
@@ -2532,40 +2589,45 @@ class ApprovalMixin:
             return False
         lock = self._approval_locks.setdefault(chat_id, asyncio.Lock())
         async with lock:
-            session_key = self._pending_approvals.pop(chat_id, None)
-            is_admin_approval = self._pending_approval_admin.pop(chat_id, False)
+            session_key = self._pending_approvals.get(chat_id)
+            is_admin_approval = self._pending_approval_admin.get(chat_id, False)
             if not session_key:
                 return False
             try:
                 from tools.approval import has_blocking_approval
                 if not has_blocking_approval(session_key):
+                    self._pending_approvals.pop(chat_id, None)
+                    self._pending_approval_admin.pop(chat_id, None)
                     return False
             except ImportError:
                 pass
-            if is_admin_approval and admin_qq and user_id and str(user_id) != str(admin_qq):
-                self._pending_approvals[chat_id] = session_key
-                self._pending_approval_admin[chat_id] = True
-                return False
+            if is_admin_approval:
+                if not admin_qq:
+                    logger.warning("approval admin is not configured; rejecting admin_only shortcut for %s", chat_id)
+                    await self.send(chat_id, "✗ 管理员未配置，无法批准此操作")
+                    return True
+                if user_id and str(user_id) != str(admin_qq):
+                    return False
             text = _strip_slash(user_text.strip().lower())
             choice = _APPROVAL_CHOICES.get(text)
             if choice is None:
-                self._pending_approvals[chat_id] = session_key
-                if is_admin_approval:
-                    self._pending_approval_admin[chat_id] = True
                 return False
-        try:
-            from tools.approval import resolve_gateway_approval
-            resolve_gateway_approval(session_key, choice)
-            choice_text = {
-                "once": "单次批准",
-                "session": "会话批准",
-                "always": "永久批准",
-                "deny": "已拒绝",
-            }
-            await self.send(chat_id, f"✓ {choice_text.get(choice, choice)}")
-            return True
-        except Exception as e:
-            return False
+            try:
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(session_key, choice)
+            except Exception as e:
+                logger.warning("Failed to resolve gateway approval %s: %s", session_key, e)
+                return False
+            self._pending_approvals.pop(chat_id, None)
+            self._pending_approval_admin.pop(chat_id, None)
+        choice_text = {
+            "once": "单次批准",
+            "session": "会话批准",
+            "always": "永久批准",
+            "deny": "已拒绝",
+        }
+        await self.send(chat_id, f"✓ {choice_text.get(choice, choice)}")
+        return True
     async def _handle_update_shortcut(self, chat_id: str, user_text: str) -> bool:
         if chat_id not in self._pending_update_chats:
             return False
@@ -2705,12 +2767,18 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
         msg_type, raw_id = _parse_chat_id(chat_id)
         if msg_type == "group":
             name = f"group_{raw_id}"
-            action, params, name_key = "get_group_info", {"group_id": int(raw_id)}, "group_name"
             chat_type = "group"
+            try:
+                action, params, name_key = "get_group_info", {"group_id": int(raw_id)}, "group_name"
+            except (ValueError, TypeError):
+                return {"id": chat_id, "name": name, "type": chat_type}
         else:
             name = f"user_{raw_id}"
-            action, params, name_key = "get_stranger_info", {"user_id": int(raw_id)}, "nickname"
             chat_type = "dm"
+            try:
+                action, params, name_key = "get_stranger_info", {"user_id": int(raw_id)}, "nickname"
+            except (ValueError, TypeError):
+                return {"id": chat_id, "name": name, "type": chat_type}
         conn = self._get_conn_for_chat(chat_id)
         if conn.is_connected:
             try:
@@ -2720,7 +2788,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
                     name = rdata[name_key]
             except Exception:
                 pass
-        return {"name": name, "type": chat_type}
+        return {"id": chat_id, "name": name, "type": chat_type}
 def _config_extra(config) -> dict:
     if isinstance(config, dict):
         return config.get("extra", {}) or {}
@@ -2845,7 +2913,8 @@ async def _standalone_send(
         return {"success": False, "error": "No message or media to send"}
     payload = {"action": action, "params": {id_key: tid, "message": segments}, "echo": echo}
     try:
-        async with websockets.connect(ws_url, additional_headers=headers, open_timeout=15, **_WS_CONNECT_KWARGS) as ws:
+        ws = await _websockets_connect(ws_url, headers=headers, timeout=15, open_timeout=15, **_WS_CONNECT_KWARGS)
+        async with ws:
             await ws.send(json.dumps(payload))
             for _ in range(5):
                 data = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
@@ -2870,8 +2939,8 @@ def interactive_setup() -> dict:
         if not ws_url:
             ws_url = "ws://0.0.0.0:8082"
     token = input("Access token (leave empty if none): ").strip()
-    allowed = input("Allowed QQ numbers (comma-separated, empty for all): ").strip()
-    groups = input("Group IDs to listen (comma-separated, empty for all): ").strip()
+    allowed = input("Allowed QQ numbers (comma-separated, 留空则拒绝所有用户): ").strip()
+    groups = input("Group IDs to listen (comma-separated, 留空则拒绝所有群): ").strip()
     env_vars = {
         "ONEBOT_WS_URL": ws_url,
         "ONEBOT_WS_MODE": mode,

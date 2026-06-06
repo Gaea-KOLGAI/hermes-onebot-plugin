@@ -46,8 +46,9 @@ try:
         _make_chat_id, _parse_chat_id, _extract_account_from_chat_id,
         _load_gateway_tool_progress_mode, _normalise_tool_progress_mode,
         _save_gateway_tool_progress_mode,
+        _is_safe_media_download_url, _is_safe_outbound_local_path, _websockets_connect,
         DedupCache, RateLimiter, MemberCache,
-        _NapCatConnection, _PluginSettings, _MediaCache,
+        _NapCatConnection, _PluginSettings, _MediaCache, MEDIA_CACHE_DIR,
         SettingsMixin, ConnectionMixin, MessageMixin,
         CommandMixin, SendMixin, ApprovalMixin,
         OneBotAdapter,
@@ -602,6 +603,32 @@ try:
 except Exception as e:
     fail("路径穿越", str(e))
 
+try:
+    assert not _is_safe_media_download_url("http://127.0.0.1/private.png")
+    assert not _is_safe_media_download_url("http://localhost/private.png")
+    assert _is_safe_media_download_url("https://example.com/public.png")
+    ok("媒体下载 SSRF 检查统一阻断本地和内网地址")
+except Exception as e:
+    fail("媒体下载 SSRF 检查", str(e))
+
+try:
+    safe_probe = MEDIA_CACHE_DIR / "out.png"
+    safe_probe.parent.mkdir(parents=True, exist_ok=True)
+    safe_probe.write_bytes(b"x")
+    assert _is_safe_outbound_local_path(safe_probe)
+    assert not _is_safe_outbound_local_path("/private/secret/id_rsa")
+    assert not _is_safe_outbound_local_path("/private/hermes/secrets.toml")
+    ok("出站本地媒体路径限制敏感路径")
+except Exception as e:
+    fail("出站媒体路径限制", str(e))
+
+try:
+    src = inspect.getsource(_websockets_connect)
+    assert "additional_headers" in src and "extra_headers" in src
+    ok("WebSocket connect 兼容 additional_headers/extra_headers")
+except Exception as e:
+    fail("WebSocket connect 兼容", str(e))
+
 
 # ============================================================
 section("20. 并发安全 (async)")
@@ -760,7 +787,16 @@ try:
 except Exception as e:
     fail("审批选项映射", str(e))
 
-# #3 空允许列表 - is_user_authorized 改为 deny
+# #3 审批 pending 失败可重试，admin_only 无管理员时默认拒绝
+try:
+    src = inspect.getsource(ApprovalMixin._resolve_approval_shortcut)
+    assert "session_key = self._pending_approvals.get(chat_id)" in src, "应先读取 pending，resolve 成功后再移除"
+    assert "approval admin is not configured" in src, "admin_only 无管理员时应默认拒绝"
+    ok("审批 pending 可靠性和 admin_only 默认拒绝")
+except Exception as e:
+    fail("审批 pending/admin_only", str(e))
+
+# #4 空允许列表 - is_user_authorized 改为 deny
 try:
     conn = _NapCatConnection(
         name="test", ws_url="ws://test", allowed_users=[], allow_all=False
@@ -769,7 +805,12 @@ try:
     assert result == False, f"空 allowlist 应返回 False, 实际 {result}"
     result2 = conn.is_user_authorized("12345", "group", {"group_id": "999"})
     assert result2 == False, f"空 group allowlist 应返回 False, 实际 {result2}"
-    ok("空 allowlist 默认拒绝 (deny-all)")
+    cfg_src = inspect.getsource(CommandMixin._cmd_config)
+    assert "空，拒绝所有用户" in cfg_src
+    assert "空，拒绝所有群" in cfg_src
+    setup_src = inspect.getsource(onebot_adapter.interactive_setup)
+    assert "留空则拒绝所有用户" in setup_src
+    ok("空 allowlist 默认拒绝 (deny-all)，配置文案一致")
 except Exception as e:
     fail("空 allowlist 拒绝", str(e))
 
@@ -827,6 +868,42 @@ try:
     ok("retcode 检查在 send 方法中复用")
 except Exception as e:
     fail("retcode 复用", str(e))
+
+try:
+    settings = _PluginSettings(pathlib.Path(tempfile.gettempdir()) / "onebot-test-settings.json")
+    assert settings._normalize_key("main:group_123") == "main:group_123"
+    assert settings._normalize_key("work:group_123") == "work:group_123"
+    ok("多账号聊天设置保留账号前缀隔离")
+except Exception as e:
+    fail("多账号设置隔离", str(e))
+
+try:
+    data1 = {"user_id": "123", "time": 100, "message": [{"type": "text", "data": {"text": "a"}}]}
+    data2 = {"user_id": "123", "time": 100, "message": [{"type": "text", "data": {"text": "b"}}]}
+    conn = _NapCatConnection("test", "ws://test", allowed_users=["123"])
+    mixin = object.__new__(MessageMixin)
+    assert mixin._check_duplicate_and_self(data1, conn) is False
+    assert mixin._check_duplicate_and_self(data2, conn) is False
+    ok("message_id 缺失时去重包含消息内容 hash")
+except Exception as e:
+    fail("message_id 缺失去重", str(e))
+
+try:
+    src = inspect.getsource(SendMixin.send_document)
+    assert "trusted_local_file" in src
+    assert "require_safe_local=not trusted_local" in src
+    ok("send_document 默认沿用出站本地路径限制")
+except Exception as e:
+    fail("send_document 出站路径限制", str(e))
+
+try:
+    adapter_obj = object.__new__(OneBotAdapter)
+    adapter_obj._multi_account = False
+    info = asyncio.get_event_loop().run_until_complete(adapter_obj.get_chat_info("group_abc"))
+    assert info["id"] == "group_abc" and info["type"] == "group"
+    ok("get_chat_info 非数字 chat_id 安全 fallback")
+except Exception as e:
+    fail("get_chat_info fallback", str(e))
 
 
 # ============================================================
