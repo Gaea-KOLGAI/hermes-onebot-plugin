@@ -2307,32 +2307,6 @@ class SendMixin:
         if raw_path.startswith(("http://", "https://")):
             return await self.send(chat_id, f"文件链接: {raw_path}", reply_to=reply_to, metadata=metadata)
         return sr
-    async def send_poke(self, chat_id: str, user_id: str) -> SendResult:
-        conn = self._get_conn_for_chat(chat_id)
-        msg_kind, target_id = _parse_chat_id(chat_id)
-        if msg_kind == "group":
-            message = [{"type": "poke", "data": {"qq": str(user_id)}}]
-            action, params = self._send_msg_params(msg_kind, target_id, message)
-            result = await self._send_action_conn(conn, action, params)
-        else:
-            try:
-                uid = _safe_int(user_id, "user_id")
-            except ValueError as e:
-                return SendResult(success=False, error=str(e))
-            result = await self._send_action_conn(conn, "friend_poke", {"user_id": uid})
-        return _result_to_send_result(result, "send_poke", extract_msg_id=True)
-    async def send_emoji_reaction(self, chat_id: str, message_id: str, emoji_id: int) -> SendResult:
-        conn = self._get_conn_for_chat(chat_id)
-        try:
-            mid = _safe_int(message_id, "message_id")
-            eid = _safe_int(emoji_id, "emoji_id")
-        except ValueError as e:
-            return SendResult(success=False, error=str(e))
-        result = await self._send_action_conn(conn, "set_msg_emoji_like", {
-            "message_id": mid,
-            "emoji_id": eid,
-        })
-        return _result_to_send_result(result, "set_msg_emoji_like")
     def _notice_sender_name(self, data: dict) -> str:
         return str(data.get("nickname") or data.get("card") or data.get("user_id") or "system")
 

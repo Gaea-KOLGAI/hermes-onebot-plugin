@@ -855,9 +855,9 @@ section("24. 代码复用验证")
 try:
     src = inspect.getsource(SendMixin.send_document)
     assert "_safe_target_id" in src, "send_document 应使用 _safe_target_id"
-    src2 = inspect.getsource(SendMixin.send_poke)
-    assert "_safe_target_id" not in src2 or "_safe_int" in src2, "send_poke 可独立处理"
-    ok("SendMixin 方法使用 _safe_target_id 复用")
+    assert not any(name == "send_poke" for name in SendMixin.__dict__)
+    assert not any(name == "send_emoji_reaction" for name in SendMixin.__dict__)
+    ok("未使用的轻互动发送方法已移除")
 except Exception as e:
     fail("_safe_target_id 复用", str(e))
 

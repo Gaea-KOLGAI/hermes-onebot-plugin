@@ -140,7 +140,7 @@ def register(ctx):
             "You are chatting via QQ (OneBot/NapCat). "
             "QQ supports basic formatting. Messages can be up to 4500 characters. "
             "Images can be sent via OneBot image segments. "
-            "You can send voice, video, files, poke, forward messages, and more. "
+            "You can send voice, video, files, forward messages, and more. "
             "Keep responses conversational and concise. "
             "In groups, messages are prefixed with [sender_name]. "
             "Use @mentions to address specific users."
