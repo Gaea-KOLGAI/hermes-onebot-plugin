@@ -126,7 +126,6 @@ gateway:
 | `/onebot help media` | 查看媒体能力说明 | 否 |
 | `/onebot help admin` | 查看管理指令说明 | 否 |
 | `/onebot config` | 查看 OneBot 当前聊天配置 | 是 |
-| `/onebot status` | 同 `/onebot config` | 是 |
 | `/adduser <QQ号>` | 添加用户白名单 | 是 |
 | `/removeuser <QQ号>` | 移除用户白名单 | 是 |
 | `/listusers` | 查看用户白名单 | 是 |

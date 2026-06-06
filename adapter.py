@@ -1802,8 +1802,6 @@ class CommandMixin:
             "h": (self._cmd_help, False),
             "?": (self._cmd_help, False),
             "config": (self._cmd_config, True),
-            "status": (self._cmd_config, True),
-            "cfg": (self._cmd_config, True),
         }
         route = routes.get(sub)
         if not route:
