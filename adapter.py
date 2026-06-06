@@ -1881,10 +1881,10 @@ class CommandMixin:
         sections = {
             "basic": [
                 "基础",
-                "/help  查看指令总览",
                 "/onebot  查看OneBot插件帮助",
-                "/config  查看当前聊天配置",
-                "/status  同/config",
+                "/onebot help media  查看媒体能力",
+                "/onebot help admin  查看管理指令",
+                "/onebot config  查看当前聊天配置",
             ],
             "access": [
                 "权限与白名单",
@@ -1925,7 +1925,7 @@ class CommandMixin:
             keys = [aliases[topic]]
         else:
             keys = ["basic", "access", "display", "media", "hermes"]
-        lines = ["OneBot指令中心", "用法：/help media 或 /help admin", ""]
+        lines = ["OneBot指令中心", "用法：/onebot help media 或 /onebot help admin", ""]
         for key in keys:
             section = sections[key]
             lines.append(f"【{section[0]}】")
