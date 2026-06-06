@@ -44,7 +44,7 @@ description: >
   - /addgroup <群号> - 添加群到白名单
   - /rmgroup <群号> - 从白名单移除群
   - /listgroups - 查看群白名单
-  - /settool on|off - 工具调用提示开关
+  - /settool on|off - 直接修改 Gateway 层工具调用提示开关
   - /setmd on|off - Markdown清理开关
   - /setallowall on|off - 允许所有人开关
   - /config - 查看当前配置

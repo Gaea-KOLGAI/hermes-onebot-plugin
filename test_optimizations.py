@@ -5,6 +5,11 @@ from pathlib import Path
 import adapter
 from adapter import _parse_single_account_env, _truthy, _csv_list, _apply_yaml_config, DATA_DIR, MEDIA_CACHE_DIR
 from adapter import _extract_text_from_message, _extract_segments, _MediaCache
+from adapter import (
+    _load_gateway_tool_progress_mode,
+    _normalise_tool_progress_mode,
+    _save_gateway_tool_progress_mode,
+)
 
 
 class _FakeResponse:
@@ -57,6 +62,29 @@ def test_yaml_bridge_sets_env_and_returns_extra(monkeypatch):
 def test_runtime_paths_are_profile_writable():
     assert ".hermes/plugins/onebot-platform" in str(DATA_DIR)
     assert MEDIA_CACHE_DIR.parent == DATA_DIR
+
+
+def test_tool_progress_switch_is_gateway_scoped(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("display:\n  tool_progress: new\n", encoding="utf-8")
+    monkeypatch.setattr(adapter, "_hermes_config_path", lambda: cfg)
+
+    assert _normalise_tool_progress_mode(False) == "off"
+    assert _normalise_tool_progress_mode(True) == "all"
+    assert _normalise_tool_progress_mode("verbose") == "verbose"
+    assert _normalise_tool_progress_mode("bad") == "all"
+    assert _load_gateway_tool_progress_mode("onebot") == "new"
+
+    _save_gateway_tool_progress_mode("off", "onebot")
+    assert _load_gateway_tool_progress_mode("onebot") == "off"
+    assert "platforms:\n    onebot:\n      tool_progress: 'off'" in cfg.read_text(encoding="utf-8")
+
+
+def test_adapter_no_longer_filters_tool_progress_locally():
+    src = Path(adapter.__file__).read_text(encoding="utf-8")
+    assert "_TOOL_PROGRESS_RE" not in src
+    assert "settings.get(\"tool_progress\") is False" not in src
+    assert "_save_gateway_tool_progress_mode(mode, \"onebot\")" in src
 
 
 def test_cq_text_unescape_uses_single_segment_parser():

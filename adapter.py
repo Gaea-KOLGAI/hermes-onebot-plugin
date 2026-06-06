@@ -11,12 +11,6 @@ import socket
 import tempfile
 import time
 
-# Regex to match tool progress messages from gateway.
-# Format: "⚡ tool_name(...)" or "⚡ tool_name: ..." or "⚡ tool_name..."
-# Some emojis (⚙️) include a variation selector U+FE0F.
-_TOOL_PROGRESS_RE = re.compile(
-    r'^[\u26a1\u2699\U0001f527\U0001f50d\U0001f310\U0001f4be\U0001f4dd\U0001f4cb\U0001f5d1\U0000270f\U0001f5bc\U0001f9e0\U0001f441]\ufe0f?\s+\w+[\(:.]'
-)
 import uuid
 import random as _random
 from collections import OrderedDict
@@ -118,6 +112,55 @@ def _hermes_onebot_data_dir() -> Path:
     path = base / "plugins" / "onebot-platform"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+def _hermes_config_path() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "config.yaml"
+    except Exception:
+        return Path.home() / ".hermes" / "config.yaml"
+
+def _normalise_tool_progress_mode(value: Any) -> str:
+    if value is False:
+        return "off"
+    if value is True:
+        return "all"
+    mode = str(value or "").strip().lower()
+    return mode if mode in {"off", "new", "all", "verbose"} else "all"
+
+def _load_gateway_tool_progress_mode(platform_key: str = "onebot") -> str:
+    try:
+        import yaml
+        from gateway.display_config import resolve_display_setting
+        config_path = _hermes_config_path()
+        if not config_path.exists():
+            return "all"
+        user_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        return _normalise_tool_progress_mode(
+            resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+        )
+    except Exception as e:
+        logger.debug("Failed to load gateway tool_progress mode: %s", e)
+    return "all"
+
+def _save_gateway_tool_progress_mode(mode: str, platform_key: str = "onebot") -> None:
+    import yaml
+    from utils import atomic_yaml_write
+    config_path = _hermes_config_path()
+    user_config = {}
+    if config_path.exists():
+        user_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    display = user_config.setdefault("display", {})
+    if not isinstance(display, dict):
+        display = user_config["display"] = {}
+    platforms = display.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = display["platforms"] = {}
+    platform_display = platforms.setdefault(platform_key, {})
+    if not isinstance(platform_display, dict):
+        platform_display = platforms[platform_key] = {}
+    platform_display["tool_progress"] = _normalise_tool_progress_mode(mode)
+    atomic_yaml_write(config_path, user_config)
 
 def _truthy(value: Any, default: bool = False) -> bool:
     if value is None or value == "":
@@ -1671,10 +1714,11 @@ class CommandMixin:
     def _register_commands(self):
         _lm = self._cmd_list_mutate
         cmds = [
-            ("/help", self._cmd_help, False),
-            ("/onebot", self._cmd_help, False),
-            ("/config", self._cmd_config, True),
-            ("/status", self._cmd_config, True),
+            # Keep OneBot management commands under the /onebot namespace so
+            # core Hermes slash commands (/help, /config, /status, …) continue
+            # to reach the gateway command dispatcher. Older broad aliases made
+            # the adapter swallow core commands before Hermes could see them.
+            ("/onebot", self._cmd_onebot, False),
             ("/adduser", functools.partial(_lm, entity_type="user", action="add"), True),
             ("/removeuser", functools.partial(_lm, entity_type="user", action="remove"), True),
             ("/listusers", functools.partial(_lm, entity_type="user", action="list"), True),
@@ -1703,6 +1747,20 @@ class CommandMixin:
             return True
         await cmd_def.handler(conn, data, cmd_args, user_id, admin_qq)
         return True
+    async def _cmd_onebot(self, conn, data, args, user_id, admin_qq):
+        parts = args.strip().split(maxsplit=1)
+        sub = parts[0].lower() if parts else "help"
+        rest = parts[1] if len(parts) > 1 else ""
+        if sub in ("", "help", "h", "?"):
+            await self._cmd_help(conn, data, rest, user_id, admin_qq)
+            return
+        if sub in ("config", "status", "cfg"):
+            if user_id != admin_qq:
+                await self._send_reply_async_conn(conn, data, "✗ 只有管理员可以执行此命令")
+                return
+            await self._cmd_config(conn, data, rest, user_id, admin_qq)
+            return
+        await self._send_reply_async_conn(conn, data, "✗ 未知OneBot子命令。用 /onebot help 查看")
     async def _cmd_list_mutate(self, conn, data, args, user_id, admin_qq,
                                 entity_type: str, action: str):
         labels = {"user": ("白名单", "用户", "QQ号", "adduser", "removeuser"),
@@ -1824,7 +1882,18 @@ class CommandMixin:
         await self._save_settings()
         await self._send_reply_async_conn(conn, data, f"✓ {label}: {'开启' if val == 'on' else '关闭'}")
     async def _cmd_settool(self, conn, data, args, user_id, admin_qq):
-        await self._cmd_toggle_setting(conn, data, args, "tool_progress", "工具调用提示", "settool")
+        val = args.strip().lower()
+        if val not in ("on", "off"):
+            await self._send_reply_async_conn(conn, data, "✗ 用法: /settool on|off")
+            return
+        mode = "all" if val == "on" else "off"
+        try:
+            _save_gateway_tool_progress_mode(mode, "onebot")
+        except Exception as e:
+            logger.warning("Failed to save gateway tool_progress mode: %s", e)
+            await self._send_reply_async_conn(conn, data, f"✗ 工具调用提示保存失败: {e}")
+            return
+        await self._send_reply_async_conn(conn, data, f"✓ 工具调用提示: {'开启' if val == 'on' else '关闭'}（gateway层）")
     async def _cmd_setmd(self, conn, data, args, user_id, admin_qq):
         await self._cmd_toggle_setting(conn, data, args, "strip_markdown", "Markdown清理", "setmd")
     async def _cmd_setallowall(self, conn, data, args, user_id, admin_qq):
@@ -1857,7 +1926,7 @@ class CommandMixin:
             f"账号：{conn.name}",
             "",
             "【开关】",
-            f"  工具调用提示：{_state(cs.get('tool_progress'))}",
+            f"  工具调用提示：{_load_gateway_tool_progress_mode('onebot')}（gateway层）",
             f"  Markdown清理：{_state(cs.get('strip_markdown'))}",
             f"  允许所有人：{'开启' if conn_allow_all else '关闭'}",
             f"  显示QQ号：{'开启' if self._show_qq_id else '关闭'}",
@@ -2045,10 +2114,9 @@ class SendMixin:
                     self._fire_and_forget_delete(chat_id, _prev_progress)
         await self.clear_input_status(chat_id)
         settings = self._plugin_settings.get_chat(chat_id)
-        # When tool_progress is off for this chat, intercept tool progress
-        # messages (emoji + tool_name pattern) — return success without sending.
-        if settings.get("tool_progress") is False and _TOOL_PROGRESS_RE.match(content or ""):
-            return SendResult(success=True)
+        # Tool-progress visibility is resolved by the Hermes gateway layer
+        # (display.platforms.onebot.tool_progress).  Keep the adapter as a
+        # transport only; do not apply a second plugin-local prompt filter.
 
         media_files, cleaned_content = self.extract_media(content or "")
         media_files = self.filter_media_delivery_paths(media_files)
@@ -2538,6 +2606,30 @@ def _parse_single_account_env(extra: dict) -> dict:
         "admin_qq": os.getenv("ONEBOT_ADMIN_QQ") or str(extra.get("admin_qq", "") or ""),
         "http_api_url": os.getenv("ONEBOT_HTTP_API_URL") or str(extra.get("http_api_url", "")),
     }
+def _onebot_platform_blocks(yaml_cfg: dict) -> List[dict]:
+    if not isinstance(yaml_cfg, dict):
+        return []
+    blocks: List[dict] = []
+    nested_platforms = yaml_cfg.get("platforms") if isinstance(yaml_cfg.get("platforms"), dict) else {}
+    gateway = yaml_cfg.get("gateway") if isinstance(yaml_cfg.get("gateway"), dict) else {}
+    gateway_platforms = gateway.get("platforms") if isinstance(gateway.get("platforms"), dict) else {}
+    for block in (yaml_cfg.get("onebot"), nested_platforms.get("onebot"), gateway_platforms.get("onebot")):
+        if isinstance(block, dict):
+            blocks.append(block)
+    return blocks
+
+def _merge_onebot_platform_blocks(yaml_cfg: dict, platform_cfg: dict = None) -> dict:
+    merged: dict = {}
+    merged_extra: dict = {}
+    for block in [*_onebot_platform_blocks(yaml_cfg), platform_cfg or {}]:
+        if not isinstance(block, dict):
+            continue
+        extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
+        merged.update({k: v for k, v in block.items() if k != "extra"})
+        merged_extra.update(extra)
+    if merged_extra:
+        merged["extra"] = merged_extra
+    return merged
 class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, SendMixin, ApprovalMixin, BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = True
     def __init__(self, config, **kwargs):
@@ -2690,11 +2782,8 @@ def _env_enablement() -> Optional[dict]:
     return result
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict:
     """Bridge config.yaml onebot settings into env/extra for Hermes gateway."""
-    extra = dict((platform_cfg or {}).get("extra") or {})
-    # Accept both gateway.platforms.onebot and top-level onebot blocks.
-    top = yaml_cfg.get("onebot") if isinstance(yaml_cfg, dict) else None
-    if isinstance(top, dict):
-        extra = {**top.get("extra", {}), **extra}
+    effective_cfg = _merge_onebot_platform_blocks(yaml_cfg, platform_cfg)
+    extra = dict(effective_cfg.get("extra") or {})
     mapping = {
         "ws_url": "ONEBOT_WS_URL",
         "access_token": "ONEBOT_ACCESS_TOKEN",

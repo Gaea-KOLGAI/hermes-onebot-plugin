@@ -45,6 +45,8 @@ try:
         _extract_typed_segments,
         _make_chat_id, _parse_chat_id, _extract_account_from_chat_id,
         _sanitize_log,
+        _load_gateway_tool_progress_mode, _normalise_tool_progress_mode,
+        _save_gateway_tool_progress_mode,
         DedupCache, RateLimiter, MemberCache,
         _NapCatConnection, _PluginSettings, _MediaCache,
         SettingsMixin, ConnectionMixin, MessageMixin,
@@ -729,7 +731,50 @@ except Exception as e:
 
 
 # ============================================================
-section("23. 安全修复验证")
+section("23. 工具调用提示开关迁移到 Gateway 层")
+# ============================================================
+
+try:
+    assert _normalise_tool_progress_mode(False) == "off"
+    assert _normalise_tool_progress_mode(True) == "all"
+    assert _normalise_tool_progress_mode("new") == "new"
+    assert _normalise_tool_progress_mode("verbose") == "verbose"
+    assert _normalise_tool_progress_mode("invalid") == "all"
+    ok("tool_progress 模式归一化")
+except Exception as e:
+    fail("tool_progress 模式归一化", str(e))
+
+try:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg_path = pathlib.Path(tmpdir) / "config.yaml"
+        cfg_path.write_text("display:\n  tool_progress: new\n", encoding="utf-8")
+        old_config_path = onebot_adapter._hermes_config_path
+        onebot_adapter._hermes_config_path = lambda: cfg_path
+        try:
+            assert _load_gateway_tool_progress_mode("onebot") == "new"
+            _save_gateway_tool_progress_mode("off", "onebot")
+            assert _load_gateway_tool_progress_mode("onebot") == "off"
+            saved = cfg_path.read_text(encoding="utf-8")
+            assert "platforms:" in saved and "onebot:" in saved and "tool_progress: 'off'" in saved
+        finally:
+            onebot_adapter._hermes_config_path = old_config_path
+    ok("/settool 写入 gateway display.platforms.onebot.tool_progress")
+except Exception as e:
+    fail("gateway tool_progress 写入", str(e))
+
+try:
+    adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
+    src = pathlib.Path(adapter_path).read_text(encoding="utf-8")
+    assert "_TOOL_PROGRESS_RE" not in src, "不应保留插件层工具提示正则"
+    assert "settings.get(\"tool_progress\") is False" not in src, "不应保留插件层工具提示拦截"
+    assert "_save_gateway_tool_progress_mode(mode, \"onebot\")" in src, "settool 应写 gateway 层"
+    ok("adapter 不再插件层过滤工具调用提示")
+except Exception as e:
+    fail("adapter 工具提示过滤清理", str(e))
+
+
+# ============================================================
+section("24. 安全修复验证")
 # ============================================================
 
 # #1 审批权限绕过 - _resolve_approval_shortcut 新增 user_id/admin_qq 参数
