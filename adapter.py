@@ -1882,9 +1882,9 @@ class CommandMixin:
             "basic": [
                 "基础",
                 "/onebot  查看OneBot插件帮助",
-                "/onebot help media  查看媒体能力",
+                "/onebot help  查看完整指令",
                 "/onebot help admin  查看管理指令",
-                "/onebot config  查看当前聊天配置",
+                "/onebot config  查看OneBot当前聊天配置",
             ],
             "access": [
                 "权限与白名单",
@@ -1901,31 +1901,10 @@ class CommandMixin:
                 "/settool on|off  工具调用提示",
                 "/setmd on|off  Markdown清理",
             ],
-            "media": [
-                "消息能力",
-                "图片  直接发图或使用 MEDIA:本地路径",
-                "语音  支持record和本地音频发送",
-                "视频  支持video和本地视频发送",
-                "文件  支持群文件上传和内容注入",
-                "引用  可解析回复内容与被引用文件",
-                "戳一戳  可用于审批危险命令",
-            ],
-            "hermes": [
-                "Hermes常用",
-                "/approve  批准待执行操作",
-                "/deny  拒绝待执行操作",
-                "/new  开新会话",
-                "/stop  停止当前任务",
-                "/model  切换模型",
-                "/restart  重启gateway",
-            ],
         }
-        aliases = {"admin": "access", "perm": "access", "config": "basic", "media": "media", "display": "display", "hermes": "hermes"}
-        if topic in aliases:
-            keys = [aliases[topic]]
-        else:
-            keys = ["basic", "access", "display", "media", "hermes"]
-        lines = ["OneBot指令中心", "用法：/onebot help media 或 /onebot help admin", ""]
+        aliases = {"admin": "access", "perm": "access", "config": "basic", "display": "display"}
+        keys = [aliases[topic]] if topic in aliases else ["basic", "access", "display"]
+        lines = ["OneBot指令中心", "用法：/onebot help admin", ""]
         for key in keys:
             section = sections[key]
             lines.append(f"【{section[0]}】")
