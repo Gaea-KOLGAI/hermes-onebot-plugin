@@ -10,7 +10,6 @@ import shutil
 import socket
 import tempfile
 import time
-
 import uuid
 import random as _random
 from collections import OrderedDict
@@ -120,14 +119,12 @@ def _hermes_onebot_data_dir() -> Path:
     path = base / "plugins" / "onebot-platform"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
 def _hermes_config_path() -> Path:
     try:
         from hermes_constants import get_hermes_home
         return get_hermes_home() / "config.yaml"
     except Exception:
         return Path.home() / ".hermes" / "config.yaml"
-
 def _normalise_tool_progress_mode(value: Any) -> str:
     if value is False:
         return "off"
@@ -135,7 +132,6 @@ def _normalise_tool_progress_mode(value: Any) -> str:
         return "all"
     mode = str(value or "").strip().lower()
     return mode if mode in {"off", "new", "all", "verbose"} else "all"
-
 def _load_gateway_tool_progress_mode(platform_key: str = "onebot") -> str:
     try:
         import yaml
@@ -150,7 +146,6 @@ def _load_gateway_tool_progress_mode(platform_key: str = "onebot") -> str:
     except Exception as e:
         logger.debug("Failed to load gateway tool_progress mode: %s", e)
     return "all"
-
 def _save_gateway_tool_progress_mode(mode: str, platform_key: str = "onebot") -> None:
     import yaml
     from utils import atomic_yaml_write
@@ -169,21 +164,18 @@ def _save_gateway_tool_progress_mode(mode: str, platform_key: str = "onebot") ->
         platform_display = platforms[platform_key] = {}
     platform_display["tool_progress"] = _normalise_tool_progress_mode(mode)
     atomic_yaml_write(config_path, user_config)
-
 def _truthy(value: Any, default: bool = False) -> bool:
     if value is None or value == "":
         return default
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "yes", "on", "y")
-
 def _csv_list(raw: Any) -> List[str]:
     if raw is None:
         return []
     if isinstance(raw, (list, tuple, set)):
         return [str(v).strip() for v in raw if str(v).strip()]
     return [s.strip() for s in str(raw).split(",") if s.strip()]
-
 DATA_DIR = _hermes_onebot_data_dir()
 MEDIA_CACHE_DIR = DATA_DIR / "media_cache"
 OUTBOUND_FILE_ALLOWED_ROOTS = (MEDIA_CACHE_DIR, Path(tempfile.gettempdir()))
@@ -193,7 +185,6 @@ def _is_ip_blocked(ip_str: str) -> bool:
     except ValueError:
         return True
     return any(ip in net for net in SSRF_BLOCKED_NETWORKS)
-
 def _is_safe_media_download_url(url: str) -> bool:
     parsed_url = urlparse(str(url or ""))
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
@@ -209,7 +200,6 @@ def _is_safe_media_download_url(url: str) -> bool:
             logger.warning("SSRF blocked: %s resolves to blocked IP %s", url, ip_str)
             return False
     return True
-
 def _is_safe_outbound_local_path(path_or_uri: Any) -> bool:
     raw = str(path_or_uri or "").strip()
     if not raw:
@@ -224,21 +214,18 @@ def _is_safe_outbound_local_path(path_or_uri: Any) -> bool:
         return False
     allowed_roots = [Path(root).resolve() for root in OUTBOUND_FILE_ALLOWED_ROOTS]
     return any(resolved == root or root in resolved.parents for root in allowed_roots)
-
 def _message_fingerprint(message: Any) -> str:
     try:
         payload = json.dumps(message, ensure_ascii=False, sort_keys=True, default=str)
     except TypeError:
         payload = str(message)
     return hashlib.sha256(payload.encode("utf-8", "ignore")).hexdigest()[:16]
-
 def _guess_media_segment_type(path: str, *, is_voice: bool = False) -> str:
     if is_voice:
         return "record"
     ext = os.path.splitext(urlparse(str(path)).path if "://" in str(path) else str(path))[1].lower()
     kind_to_segment = {"image": "image", "video": "video", "voice": "record"}
     return next((kind_to_segment[kind] for kind, exts in _MEDIA_KIND_EXTS.items() if ext in exts), "file")
-
 async def _websockets_connect(uri: str, *, headers: Optional[dict] = None, timeout: float = 15.0, **kwargs):
     connect_kwargs = {**kwargs}
     if headers:
@@ -251,7 +238,6 @@ async def _websockets_connect(uri: str, *, headers: Optional[dict] = None, timeo
             connect_kwargs["extra_headers"] = headers
             return await asyncio.wait_for(websockets.connect(uri, **connect_kwargs), timeout=timeout)
         raise
-
 def _safe_int(val, label: str = "") -> int:
     try:
         return int(val)
@@ -262,6 +248,14 @@ def _safe_target_id(target_id) -> "int | SendResult":
         return _safe_int(target_id, "target_id")
     except ValueError as e:
         return SendResult(success=False, error=str(e))
+def _ws_authorization(websocket) -> str:
+    for source in (getattr(getattr(websocket, "request", None), "headers", None), getattr(websocket, "request_headers", None)):
+        try:
+            if source:
+                return source.get("Authorization", "")
+        except Exception:
+            pass
+    return ""
 def _strip_slash(text: str) -> str:
     return text[1:] if text.startswith("/") else text
 _CQ_STRIP_RE = re.compile(r'\[CQ:[^\]]*\]')
@@ -274,7 +268,6 @@ def _extract_text_from_message(message: Any) -> str:
     if isinstance(message, list):
         return _segments_text(message)
     return ""
-
 def _segments_text(segments: List[Dict[str, Any]]) -> str:
     return "".join(
         _cq_unescape(str((seg.get("data") or {}).get("text", "")))
@@ -337,13 +330,10 @@ def _extract_images(segments: List[Dict]) -> List[str]:
     ]
 def _extract_voice(segs):
     return _extract_first(segs, "record", "url", fallback="file")
-
 def _extract_video(segs):
     return _extract_first(segs, "video", "url", fallback="file")
-
 def _extract_face(segs):
     return _extract_first(segs, "face", "id")
-
 def _extract_reply(segs):
     return _extract_first(segs, "reply", "id")
 def _extract_at(segments: List[Dict]) -> List[str]:
@@ -405,7 +395,6 @@ def _json_card_values(obj: Any, limit: int = 16) -> List[str]:
             add(x)
     walk(obj)
     return values
-
 def _extract_json_card(segments: List[Dict]) -> Optional[str]:
     for seg in segments:
         if seg.get("type") != "json":
@@ -522,7 +511,6 @@ def _parse_chat_id(chat_id: str) -> Tuple[str, str]:
     elif chat_id.startswith("private_"):
         return ("private", chat_id[8:])
     return ("private", chat_id)
-
 def _onebot_target_key(msg_kind: str) -> str:
     return "group_id" if msg_kind == "group" else "user_id"
 def _extract_account_from_chat_id(chat_id: str) -> str:
@@ -542,7 +530,6 @@ def _guess_ext_from_url(url: str, default: str = ".jpg") -> str:
     return default
 _CODEBLOCK_RE = re.compile(r'```[\s\S]*?```')
 _EXCESSIVE_NEWLINES_RE = re.compile(r'\n{3,}')
-
 def _format_message(content: str) -> str:
     if not content:
         return content
@@ -556,7 +543,6 @@ def _format_message(content: str) -> str:
         processed = processed.replace(f"\x00CODEBLOCK{i}\x00", block)
     processed = _EXCESSIVE_NEWLINES_RE.sub('\n\n', processed)
     return processed.strip()
-
 class DedupCache:
     def __init__(self, ttl: float = DEDUP_WINDOW_SECONDS, max_size: int = DEDUP_MAX_SIZE):
         self._ttl = ttl
@@ -910,20 +896,18 @@ class ConnectionMixin:
     def _set_fatal_if_default(self, conn, error_type: str, msg: str, retryable: bool = False):
         if conn is self._default_conn:
             self._set_fatal_error(error_type, msg, retryable=retryable)
+    async def _connect_conn_by_mode(self, conn: _NapCatConnection) -> bool:
+        if conn.ws_mode == "reverse":
+            return await self._connect_reverse_conn(conn)
+        return await self._connect_forward_conn(conn)
     async def connect(self) -> bool:
         await self._ensure_settings_loaded()
         self._shutting_down = False
         if len(self._connections) == 1 and not self._multi_account:
-            conn = self._default_conn
-            if conn.ws_mode == "reverse":
-                return await self._connect_reverse_conn(conn)
-            return await self._connect_forward_conn(conn)
+            return await self._connect_conn_by_mode(self._default_conn)
         any_connected = False
         for name, conn in self._connections.items():
-            if conn.ws_mode == "reverse":
-                ok = await self._connect_reverse_conn(conn)
-            else:
-                ok = await self._connect_forward_conn(conn)
+            ok = await self._connect_conn_by_mode(conn)
             if ok:
                 any_connected = True
         if any_connected:
@@ -977,22 +961,7 @@ class ConnectionMixin:
             return False
     async def _handle_reverse_ws_client(self, conn: _NapCatConnection, websocket) -> None:
         if conn.access_token:
-            auth_ok = False
-            try:
-                headers = getattr(websocket.request, 'headers', None)
-                if headers:
-                    auth = headers.get("Authorization", "")
-                    auth_ok = hmac.compare_digest(auth, f"Bearer {conn.access_token}")
-            except Exception:
-                pass
-            if not auth_ok:
-                try:
-                    headers = getattr(websocket, 'request_headers', {})
-                    auth = headers.get("Authorization", "")
-                    auth_ok = hmac.compare_digest(auth, f"Bearer {conn.access_token}")
-                except Exception:
-                    pass
-            if not auth_ok:
+            if not hmac.compare_digest(_ws_authorization(websocket), f"Bearer {conn.access_token}"):
                 try:
                     await websocket.close(4001, "Unauthorized")
                 except Exception:
@@ -1018,18 +987,7 @@ class ConnectionMixin:
             if conn.ws is websocket:
                 if conn.reverse_ws_clients:
                     conn.ws = next(iter(conn.reverse_ws_clients))
-                    if conn.recv_task and not conn.recv_task.done():
-                        conn.recv_task.cancel()
-                        try:
-                            await conn.recv_task
-                        except asyncio.CancelledError:
-                            pass
-                    if conn.heartbeat_task and not conn.heartbeat_task.done():
-                        conn.heartbeat_task.cancel()
-                        try:
-                            await conn.heartbeat_task
-                        except asyncio.CancelledError:
-                            pass
+                    await self._cancel_conn_tasks(conn, "recv_task", "heartbeat_task")
                     conn.recv_task = asyncio.create_task(self._receive_loop_conn(conn))
                     conn.heartbeat_task = asyncio.create_task(self._heartbeat_monitor_conn(conn))
                 else:
@@ -1230,7 +1188,6 @@ class ConnectionMixin:
         handler = handlers.get(data.get("post_type", ""))
         if handler:
             await handler(conn, data)
-
     def _resolve_echo_response(self, conn: _NapCatConnection, data: dict) -> bool:
         echo = data.get("echo")
         if not echo or echo not in conn.echo_futures:
@@ -1240,22 +1197,18 @@ class ConnectionMixin:
         if not fut.done():
             fut.set_result(data)
         return True
-
     async def _handle_meta_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
         sub = data.get("meta_event_type", "")
         if sub == "heartbeat":
             conn.last_heartbeat = time.time()
         elif sub == "lifecycle" and data.get("sub_type", "") == "connect":
             asyncio.create_task(self._fetch_self_info_conn(conn))
-
     async def _handle_message_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
         account_name = conn.name if self._multi_account else ""
         chat_id = _make_chat_id(data, account_name)
         self._dispatch_for_chat(chat_id, self._handle_message(data, conn=conn))
-
     async def _handle_notice_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
         self._dispatch_for_chat(f"notice:{data.get('notice_type', '')}", self._handle_notice(data, conn), notice=True)
-
     async def _handle_request_event_conn(self, conn: _NapCatConnection, data: dict) -> None:
         self._dispatch_for_chat(f"request:{data.get('request_type', '')}", self._handle_request(data, conn), notice=True)
 class MessageMixin:
@@ -1340,46 +1293,31 @@ class MessageMixin:
     async def _parse_message_segments(self, data: dict, conn, raw_message, text_for_cmd: str = "",
                                       segments: Optional[List[Dict[str, Any]]] = None) -> Optional[dict]:
         segments = segments if segments is not None else _extract_segments(raw_message)
-        text = text_for_cmd or _segments_text(segments)
-        images = _extract_images(segments)
-        voice_url = _extract_voice(segments)
-        video_url = _extract_video(segments)
-        at_targets = _extract_at(segments)
-        reply_id = _extract_reply(segments)
-        face_id = _extract_face(segments)
-        forward_id = _extract_forward(segments)
-        typed = _extract_typed_segments(segments)
-        json_card = _extract_json_card(segments)
-        xml_msg = _extract_xml(segments)
-        if not text and not images and not voice_url and not video_url and not forward_id and not face_id \
-                and not json_card and not xml_msg and not any(typed.values()):
+        parsed = {
+            "segments": segments,
+            "text": text_for_cmd or _segments_text(segments),
+            "images": _extract_images(segments),
+            "voice_url": _extract_voice(segments),
+            "video_url": _extract_video(segments),
+            "at_targets": _extract_at(segments),
+            "reply_id": _extract_reply(segments),
+            "face_id": _extract_face(segments),
+            "forward_id": _extract_forward(segments),
+            "json_card": _extract_json_card(segments),
+            "xml_msg": _extract_xml(segments),
+            **_extract_typed_segments(segments),
+            "forward_content": "",
+            "forward_images": [],
+        }
+        if not any(parsed[k] for k in ("text", "images", "voice_url", "video_url", "forward_id", "face_id", "json_card", "xml_msg")) \
+                and not any(v for k, v in parsed.items() if k.endswith("_msg") or k.endswith("_seg")):
             return None
-        forward_content = ""
-        forward_images: List[str] = []
-        if forward_id:
+        if parsed["forward_id"]:
             try:
-                fwd_text, fwd_imgs = await self._resolve_forward_message(forward_id, conn)
-                if fwd_text:
-                    forward_content = fwd_text
-                forward_images = fwd_imgs
+                parsed["forward_content"], parsed["forward_images"] = await self._resolve_forward_message(parsed["forward_id"], conn)
             except Exception as e:
                 pass
-        return {
-            "segments": segments,
-            "text": text,
-            "images": images,
-            "voice_url": voice_url,
-            "video_url": video_url,
-            "at_targets": at_targets,
-            "reply_id": reply_id,
-            "face_id": face_id,
-            "forward_id": forward_id,
-            "json_card": json_card,
-            "xml_msg": xml_msg,
-            **typed,
-            "forward_content": forward_content,
-            "forward_images": forward_images,
-        }
+        return parsed
     @staticmethod
     def _prune_oldest(d: dict, max_size: int, prune_count: int = None):
         if len(d) <= max_size:
@@ -1464,13 +1402,7 @@ class MessageMixin:
             async with sem:
                 return await self._media_cache.download(img_url, self._http_client, "image")
         results = await asyncio.gather(*[_download_one(u) for u in urls], return_exceptions=True)
-        paths = []
-        for r in results:
-            if isinstance(r, str) and r:
-                paths.append(r)
-            elif isinstance(r, Exception):
-                pass
-        return paths
+        return [r for r in results if isinstance(r, str) and r]
     async def _inject_file_content(self, segments: List[Dict], text: str, conn) -> str:
         injected = text
         for seg in segments:
@@ -1513,7 +1445,6 @@ class MessageMixin:
             except Exception as e:
                 pass
         return injected
-
     async def _resolve_file_url(self, data: dict, conn) -> str:
         file_id = data.get("file_id") or data.get("id") or data.get("file")
         if not file_id:
@@ -1536,7 +1467,6 @@ class MessageMixin:
                     return f"file://{url}"
                 return str(url)
         return ""
-
     async def _build_and_dispatch_event(self, parsed: dict, display_text: str, text: str,
                                          chat_id: str, user_id: str, sender_name: str,
                                          message_id: str, msg_type: str, *,
@@ -1642,7 +1572,6 @@ class MessageMixin:
         if fwd_lines:
             text_block = "\n[合并转发消息]\n" + "\n".join(fwd_lines) + "\n[转发结束]"
         return text_block, fwd_images
-
     def _reply_segment_fallback(self, segments: List[Dict]) -> str:
         for seg in segments or []:
             if seg.get("type") != "reply":
@@ -1657,7 +1586,6 @@ class MessageMixin:
             body = body or "无法从NapCat取回原文"
             return f"\n[引用 {sender}: {body[:MAX_QUOTE_TEXT]}]"
         return ""
-
     async def _append_reply_context(self, display_text: str, reply_id: str, conn, source_segments: Optional[List[Dict]] = None) -> tuple:
         quoted_images: List[str] = []
         _fallback = self._reply_segment_fallback(source_segments or []) or "\n[引用了一条消息，但无法获取内容]"
@@ -1830,13 +1758,11 @@ class CommandMixin:
             conn, val, _reply, persist, get_list,
             list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq,
         )
-
     async def _handle_list_command(self, conn, val, reply, persist, get_list,
                                    list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq):
         items = get_list()
         msg = f"当前{list_label}：\n" + "\n".join(f"• {u}" for u in items) if items else f"{list_label}为空"
         await reply(msg)
-
     async def _handle_add_command(self, conn, val, reply, persist, get_list,
                                   list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq):
         if not val:
@@ -1857,7 +1783,6 @@ class CommandMixin:
         await persist(conn)
         suffix = f" 到{list_label}" if id_label == "QQ号" else ""
         await reply(f"✓ 已添加{entity_label} {val}{suffix}")
-
     async def _handle_remove_command(self, conn, val, reply, persist, get_list,
                                      list_label, entity_label, id_label, add_cmd, rm_cmd, admin_qq):
         if not val:
@@ -2010,7 +1935,6 @@ class SendMixin:
                 return ws
             await asyncio.sleep(0.25)
         return conn.ws
-
     async def _send_action_conn(self, conn: _NapCatConnection, action: str, params: dict, timeout: float = 15.0) -> dict:
         if action in self._unsupported_actions:
             return {"status": "failed", "retcode": 1, "msg": f"action '{action}' not supported by this NapCat version"}
@@ -2089,7 +2013,6 @@ class SendMixin:
         if receive_seq is None:
             return None
         return reply_to if self._chat_msg_seq.get(chat_id, 0) > receive_seq else None
-
     def _message_with_optional_reply(self, chat_id: str, reply_to: Optional[str], *segments: dict) -> List[dict]:
         message = []
         quoted = self._should_quote(chat_id, reply_to)
@@ -2097,7 +2020,6 @@ class SendMixin:
             message.append({"type": "reply", "data": {"id": str(quoted)}})
         message.extend(segments)
         return message
-
     async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 15.0) -> dict:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
@@ -2106,7 +2028,6 @@ class SendMixin:
     def _media_extension(self, path: str) -> str:
         parsed_path = urlparse(path).path if "://" in str(path) else str(path)
         return os.path.splitext(parsed_path)[1].lower()
-
     def _classify_media_path(self, path: str, *, force_voice: bool = False, as_document: bool = False) -> str:
         if as_document:
             return "document"
@@ -2118,7 +2039,6 @@ class SendMixin:
             if ext in exts or (mime and mime.startswith(f"{kind}/")):
                 return kind
         return "document"
-
     def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
         raw = str(path_or_url).strip()
         if raw.startswith(("http://", "https://")):
@@ -2134,7 +2054,6 @@ class SendMixin:
             return p.as_uri()
         except ValueError:
             return "file://" + url_quote(str(p))
-
     async def _send_media_path(
         self, chat_id: str, media_path: str, *, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
@@ -2150,7 +2069,6 @@ class SendMixin:
         return await senders.get(kind, self.send_document)(
             chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata
         )
-
     async def send(
         self,
         chat_id: str,
@@ -2169,7 +2087,6 @@ class SendMixin:
         # Tool-progress visibility is resolved by the Hermes gateway layer
         # (display.platforms.onebot.tool_progress).  Keep the adapter as a
         # transport only; do not apply a second plugin-local prompt filter.
-
         media_files, cleaned_content = self.extract_media(content or "")
         media_files = self.filter_media_delivery_paths(media_files)
         if media_files:
@@ -2189,7 +2106,6 @@ class SendMixin:
                     return result
                 last_result = result
             return last_result
-
         if settings.get("strip_markdown", True):
             content = self.format_message(content or "")
         if not content:
@@ -2201,44 +2117,40 @@ class SendMixin:
         if result.get("retcode") != 0:
             logger.debug("Send failed: retcode=%s", result.get("retcode"))
         return _result_to_send_result(result, "send", extract_msg_id=True)
+    async def _send_file_segment(
+        self, chat_id: str, path_or_url: str, seg_type: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, timeout: float = 30.0,
+    ) -> SendResult:
+        try:
+            file_value = self._as_onebot_file_value(path_or_url)
+        except ValueError as e:
+            return SendResult(success=False, error=str(e))
+        return await self._send_media(chat_id, seg_type, file_value, caption, reply_to, timeout=timeout)
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        try:
-            file_value = self._as_onebot_file_value(image_url)
-        except ValueError as e:
-            return SendResult(success=False, error=str(e))
-        return await self._send_media(chat_id, "image", file_value, caption, reply_to)
+        return await self._send_file_segment(chat_id, image_url, "image", caption, reply_to)
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         return await self.send_image(chat_id, animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
-    async def _send_local_file(
-        self, chat_id: str, path: str, seg_type: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, timeout: float = 30.0,
-    ) -> SendResult:
-        try:
-            file_uri = self._as_onebot_file_value(path)
-        except ValueError as e:
-            return SendResult(success=False, error=str(e))
-        return await self._send_media(chat_id, seg_type, file_uri, caption, reply_to, timeout=timeout)
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        return await self._send_local_file(chat_id, image_path, "image", caption, reply_to)
+        return await self._send_file_segment(chat_id, image_path, "image", caption, reply_to)
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        return await self._send_local_file(chat_id, audio_path, "record", caption, reply_to)
+        return await self._send_file_segment(chat_id, audio_path, "record", caption, reply_to)
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        return await self._send_local_file(chat_id, video_path, "video", caption, reply_to, timeout=60.0)
+        return await self._send_file_segment(chat_id, video_path, "video", caption, reply_to, timeout=60.0)
     async def send_document(
         self,
         chat_id: str,
@@ -2286,7 +2198,6 @@ class SendMixin:
         return sr
     def _notice_sender_name(self, data: dict) -> str:
         return str(data.get("nickname") or data.get("card") or data.get("user_id") or "system")
-
     async def _dispatch_notice_text(self, data: dict, conn: _NapCatConnection, text: str, *, media_url: str = "", media_type: str = "") -> None:
         msg_type = "group" if data.get("group_id") else "private"
         user_id = str(data.get("user_id") or data.get("operator_id") or "")
@@ -2307,7 +2218,6 @@ class SendMixin:
             event.media_urls = [media_url]
             event.media_types = [media_type or "file"]
         await self.handle_message(event)
-
     async def _handle_group_upload_notice(self, data: dict, conn: _NapCatConnection) -> None:
         file_info = data.get("file") or {}
         name = file_info.get("name") or file_info.get("file") or "未知文件"
@@ -2326,7 +2236,6 @@ class SendMixin:
         if injected:
             text += "\n" + injected
         await self._dispatch_notice_text(data, conn, text, media_url=file_url, media_type="file")
-
     async def _handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
         notice_type = data.get("notice_type", "")
         sub_type = data.get("sub_type", "")
@@ -2361,7 +2270,6 @@ class SendMixin:
                         await self._resolve_approval_shortcut(chat_id, "1", poker_id, admin_qq)
                         return
             await self._dispatch_notice_text(data, conn, f"[戳一戳: {poker_id}]")
-
     async def _handle_request(self, data: dict, conn: _NapCatConnection) -> None:
         return
     async def set_input_status(self, chat_id: str, event_type: int = 1) -> SendResult:
@@ -2671,7 +2579,6 @@ def _onebot_platform_blocks(yaml_cfg: dict) -> List[dict]:
         if isinstance(block, dict):
             blocks.append(block)
     return blocks
-
 def _merge_onebot_platform_blocks(yaml_cfg: dict, platform_cfg: dict = None) -> dict:
     merged: dict = {}
     merged_extra: dict = {}
@@ -2791,33 +2698,17 @@ def _config_extra(config) -> dict:
     if isinstance(config, dict):
         return config.get("extra", {}) or {}
     return getattr(config, "extra", {}) or {}
-
 def check_requirements() -> bool:
     return WEBSOCKETS_AVAILABLE
+def _configured_ws_urls(extra: dict) -> List[str]:
+    accounts = extra.get("accounts", [])
+    if isinstance(accounts, list) and accounts:
+        return [acct.get("ws_url", "") for acct in accounts]
+    return [os.getenv("ONEBOT_WS_URL") or extra.get("ws_url", "")]
 def validate_config(config) -> bool:
-    extra = _config_extra(config)
-    accounts = extra.get("accounts", [])
-    if isinstance(accounts, list) and accounts:
-        for i, acct in enumerate(accounts):
-            ws_url = acct.get("ws_url", "")
-            if not ws_url:
-                return False
-            if not ws_url.startswith(("ws://", "wss://")):
-                return False
-        return True
-    ws_url = os.getenv("ONEBOT_WS_URL") or extra.get("ws_url", "")
-    if not ws_url:
-        return False
-    if not ws_url.startswith(("ws://", "wss://")):
-        return False
-    return True
+    return all(u and u.startswith(("ws://", "wss://")) for u in _configured_ws_urls(_config_extra(config)))
 def is_configured(config) -> bool:
-    extra = _config_extra(config)
-    accounts = extra.get("accounts", [])
-    if isinstance(accounts, list) and accounts:
-        return True
-    ws_url = os.getenv("ONEBOT_WS_URL") or extra.get("ws_url", "")
-    return bool(ws_url)
+    return any(_configured_ws_urls(_config_extra(config)))
 def _env_enablement() -> Optional[dict]:
     if not (ws_url := os.getenv("ONEBOT_WS_URL")):
         return None
@@ -2830,10 +2721,9 @@ def _env_enablement() -> Optional[dict]:
     ):
         if val := os.getenv(env_name):
             extra[key] = val
-    if vals := _csv_list(os.getenv("ONEBOT_ALLOWED_USERS")):
-        extra["allowed_users"] = vals
-    if vals := _csv_list(os.getenv("ONEBOT_GROUP_IDS")):
-        extra["group_ids"] = vals
+    for env_name, key in (("ONEBOT_ALLOWED_USERS", "allowed_users"), ("ONEBOT_GROUP_IDS", "group_ids")):
+        if vals := _csv_list(os.getenv(env_name)):
+            extra[key] = vals
     if os.getenv("ONEBOT_ALLOW_ALL_USERS") is not None:
         extra["allow_all"] = _truthy(os.getenv("ONEBOT_ALLOW_ALL_USERS"))
     result = {"extra": extra}
@@ -2862,7 +2752,6 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict:
     if "allow_all" in extra and not os.getenv("ONEBOT_ALLOW_ALL_USERS"):
         os.environ["ONEBOT_ALLOW_ALL_USERS"] = "true" if _truthy(extra.get("allow_all")) else "false"
     return extra
-
 async def _standalone_send(
     platform: str, chat_id: str, message: str, config: Any = None, **kwargs,
 ) -> dict:
@@ -2918,16 +2807,9 @@ def interactive_setup() -> dict:
     print("  Forward WS: Hermes connects to NapCat's WS server")
     print("  Reverse WS: NapCat connects to Hermes' WS server\n")
     mode = input("Mode [forward/reverse] (default: forward): ").strip().lower()
-    if not mode:
-        mode = "forward"
-    if mode == "forward":
-        ws_url = input("NapCat WebSocket URL [ws://127.0.0.1:3001]: ").strip()
-        if not ws_url:
-            ws_url = "ws://127.0.0.1:3001"
-    else:
-        ws_url = input("Listen address [ws://0.0.0.0:8082]: ").strip()
-        if not ws_url:
-            ws_url = "ws://0.0.0.0:8082"
+    mode = mode or "forward"
+    prompt, default = ("NapCat WebSocket URL [ws://127.0.0.1:3001]: ", "ws://127.0.0.1:3001") if mode == "forward" else ("Listen address [ws://0.0.0.0:8082]: ", "ws://0.0.0.0:8082")
+    ws_url = input(prompt).strip() or default
     token = input("Access token (leave empty if none): ").strip()
     allowed = input("Allowed QQ numbers (comma-separated, 留空则拒绝所有用户): ").strip()
     groups = input("Group IDs to listen (comma-separated, 留空则拒绝所有群): ").strip()
