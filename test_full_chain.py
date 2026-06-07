@@ -47,6 +47,7 @@ try:
         _load_gateway_tool_progress_mode, _normalise_tool_progress_mode,
         _save_gateway_tool_progress_mode,
         _is_safe_media_download_url, _is_safe_outbound_local_path, _websockets_connect,
+        _standalone_send,
         DedupCache, RateLimiter, MemberCache,
         _NapCatConnection, _PluginSettings, _MediaCache, MEDIA_CACHE_DIR,
         SettingsMixin, ConnectionMixin, MessageMixin,
@@ -920,6 +921,15 @@ try:
     ok("get_chat_info 非数字 chat_id 安全 fallback")
 except Exception as e:
     fail("get_chat_info fallback", str(e))
+
+try:
+    sig = inspect.signature(_standalone_send)
+    params = list(sig.parameters)
+    assert params[:3] == ["config", "chat_id", "message"], f"standalone_sender_fn 参数顺序错误: {params[:3]}"
+    assert any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()), "standalone_sender_fn 应接受 media_files 等 kwargs"
+    ok("standalone_sender_fn 参数顺序兼容 send_message 工具层")
+except Exception as e:
+    fail("standalone_sender_fn 签名", str(e))
 
 
 # ============================================================
