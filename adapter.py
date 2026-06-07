@@ -2753,7 +2753,7 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict:
         os.environ["ONEBOT_ALLOW_ALL_USERS"] = "true" if _truthy(extra.get("allow_all")) else "false"
     return extra
 async def _standalone_send(
-    platform: str, chat_id: str, message: str, config: Any = None, **kwargs,
+    config: Any, chat_id: str, message: str, **kwargs,
 ) -> dict:
     if not WEBSOCKETS_AVAILABLE:
         return {"success": False, "error": "websockets package not installed"}
