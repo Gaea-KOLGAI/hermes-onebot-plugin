@@ -287,7 +287,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
     def __init__(self, config, **kwargs):
         platform = Platform("onebot")
         super().__init__(config=config, platform=platform)
-        extra = getattr(config, "extra", {}) or {}
+        extra = _config_extra(config)
         self._init_connections(extra)
         self._init_shared_state(extra, kwargs)
         self._settings_path = kwargs.get("settings_path", DATA_DIR / "settings.json")
@@ -317,10 +317,6 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
                     allow_all=_truthy(acct.get("allow_all"), False),
                     admin_qq=str(acct.get("admin_qq", "")).strip(),
                     http_api_url=str(acct.get("http_api_url", "")).strip(),
-                    dedup_ttl=DEDUP_WINDOW_SECONDS,
-                    dedup_max_size=DEDUP_MAX_SIZE,
-                    rate_limit_messages_per_second=RATE_LIMIT_MESSAGES_PER_SECOND,
-                    rate_limit_burst=RATE_LIMIT_BURST,
                 )
                 self._connections[name] = conn
         if not self._connections:
@@ -330,10 +326,6 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
                 ws_mode=p["ws_mode"], allowed_users=p["allowed_users"], group_ids=p["group_ids"],
                 home_channel=p["home_channel"], allow_all=p["allow_all"], admin_qq=p["admin_qq"],
                 http_api_url=p["http_api_url"],
-                dedup_ttl=DEDUP_WINDOW_SECONDS,
-                dedup_max_size=DEDUP_MAX_SIZE,
-                rate_limit_messages_per_second=RATE_LIMIT_MESSAGES_PER_SECOND,
-                rate_limit_burst=RATE_LIMIT_BURST,
             )
             self._connections["default"] = conn
         self._default_conn: _NapCatConnection = next(iter(self._connections.values()))
@@ -357,12 +349,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._reject_notified: Dict[str, float] = {}
         self._last_seq_cleanup_time: float = 0
-        self._media_cache = kwargs.get("media_cache") or _MediaCache(
-            MEDIA_CACHE_DIR,
-            httpx_available=HTTPX_AVAILABLE,
-            is_safe_media_download_url=_is_safe_media_download_url,
-            guess_ext_from_url=_guess_ext_from_url,
-        )
+        self._media_cache = kwargs.get("media_cache") or _MediaCache(MEDIA_CACHE_DIR)
     @property
     def name(self) -> str:
         return "OneBot"

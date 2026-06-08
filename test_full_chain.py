@@ -55,6 +55,12 @@ try:
         OneBotAdapter,
     )
     ok("所有核心类/函数导入成功")
+    instance = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3001", "allowed_users": ["12345"]}})
+    assert instance.name == "OneBot"
+    assert getattr(instance.platform, "value", instance.platform) == "onebot"
+    assert instance._default_conn.ws_url == "ws://127.0.0.1:3001"
+    assert isinstance(instance._default_conn.allowed_users, list)
+    ok("OneBotAdapter 真实实例化成功")
 except ImportError as e:
     fail("模块导入", str(e))
     sys.exit(1)

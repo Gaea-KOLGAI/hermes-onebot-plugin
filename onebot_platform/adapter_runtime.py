@@ -29,6 +29,24 @@ from gateway.platforms.base import (
     MessageType,
 )
 from gateway.config import Platform
+from gateway.platform_registry import PlatformEntry, platform_registry
+
+# Register the user-installed plugin platform at import time too. The normal
+# plugin loader registers the full entry via ctx.register_platform(), but tests
+# and compatibility imports can construct OneBotAdapter directly before that
+# entry point runs. Platform._missing_ only creates plugin enum members for
+# names already known to platform_registry, so seed a minimal entry first; the
+# real plugin registration replaces it at gateway startup.
+if not platform_registry.is_registered("onebot"):
+    platform_registry.register(PlatformEntry(
+        name="onebot",
+        label="OneBot (NapCat)",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        source="plugin",
+        plugin_name="onebot-platform",
+    ))
+Platform("onebot")
 from onebot_platform.config.core import (
     _hermes_onebot_data_dir,
     _hermes_config_path as _config_utils_hermes_config_path,
