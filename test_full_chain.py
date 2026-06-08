@@ -54,6 +54,7 @@ try:
         CommandMixin, SendMixin, ApprovalMixin,
         OneBotAdapter,
     )
+    from gateway.platforms.base import SendResult
     ok("所有核心类/函数导入成功")
     instance = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3001", "allowed_users": ["12345"]}})
     assert instance.name == "OneBot"
@@ -937,6 +938,55 @@ try:
     ok("出站媒体短时间同路径去重")
 except Exception as e:
     fail("出站媒体去重", str(e))
+
+try:
+    async def _exercise_originator_mentions():
+        adapter = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3001", "allowed_users": ["12345"]}})
+        adapter._plugin_settings = _PluginSettings(pathlib.Path(tempfile.gettempdir()) / "onebot-mention-test-settings.json")
+        adapter._default_conn.http_api_url = ""
+        calls = []
+        async def fake_send_action(conn, action, params, timeout=15.0):
+            calls.append((action, params))
+            return {"retcode": 0, "data": {"message_id": len(calls)}}
+        adapter._send_action_conn = fake_send_action
+        meta = {"mention_originator_user_id": "12345", "mention_reason": "turn_response"}
+        result = await adapter.send("group_67890", "任务完成", metadata=meta)
+        assert result.success
+        msg = calls[-1][1]["message"]
+        assert msg[0] == {"type": "at", "data": {"qq": "12345"}}
+        assert msg[1] == {"type": "text", "data": {"text": " "}}
+        assert msg[2]["type"] == "text" and "任务完成" in msg[2]["data"]["text"]
+        calls.clear()
+        result = await adapter.send("private_12345", "私聊完成", metadata=meta)
+        assert result.success
+        private_msg = calls[-1][1]["message"]
+        assert private_msg[0]["type"] == "text"
+        assert not any(seg.get("type") == "at" for seg in private_msg)
+    asyncio.run(_exercise_originator_mentions())
+    ok("群聊最终回复按 metadata 自动 @ 发起人，私聊不 @")
+except Exception as e:
+    fail("originator mention", str(e))
+
+try:
+    async def _exercise_approval_metadata_passthrough():
+        adapter = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3001", "allowed_users": ["12345"]}})
+        seen = {}
+        async def fake_send(chat_id, content, reply_to=None, metadata=None):
+            seen["chat_id"] = chat_id
+            seen["metadata"] = metadata
+            return SendResult(success=True)
+        adapter.send = fake_send
+        meta = {"mention_originator_user_id": "12345", "admin_only": True}
+        result = await adapter.send_exec_approval("group_67890", "rm -rf /tmp/x", "sess", metadata=meta)
+        assert result.success
+        assert seen["metadata"] is meta
+        result = await adapter.send_update_prompt("group_67890", "确认更新？", metadata=meta)
+        assert result.success
+        assert seen["metadata"] is meta
+    asyncio.run(_exercise_approval_metadata_passthrough())
+    ok("审批和更新提示透传 mention metadata")
+except Exception as e:
+    fail("approval mention metadata", str(e))
 
 try:
     sub_src = textwrap.dedent(inspect.getsource(CommandMixin._cmd_onebot))

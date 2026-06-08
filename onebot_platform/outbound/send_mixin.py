@@ -102,6 +102,26 @@ class SendMixin:
             message.append({"type": "reply", "data": {"id": str(quoted)}})
         message.extend(segments)
         return message
+    def _mention_segments_for_metadata(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> List[dict]:
+        if not isinstance(metadata, dict):
+            return []
+        msg_kind, _target_id = _parse_chat_id(chat_id)
+        if msg_kind != "group":
+            return []
+        user_id = str(metadata.get("mention_user_id") or metadata.get("mention_originator_user_id") or "").strip()
+        if not user_id or not user_id.isdigit():
+            return []
+        return [
+            {"type": "at", "data": {"qq": user_id}},
+            {"type": "text", "data": {"text": " "}},
+        ]
+    def _with_metadata_mention(self, chat_id: str, metadata: Optional[Dict[str, Any]], *segments: dict) -> List[dict]:
+        mention = self._mention_segments_for_metadata(chat_id, metadata)
+        if not mention:
+            return list(segments)
+        if segments and segments[0].get("type") == "at" and str(segments[0].get("data", {}).get("qq", "")) == mention[0]["data"]["qq"]:
+            return list(segments)
+        return [*mention, *segments]
     async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 15.0) -> dict:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
@@ -226,7 +246,7 @@ class SendMixin:
         if not content:
             return SendResult(success=True)
         message_segments = self._message_with_optional_reply(
-            chat_id, reply_to, {"type": "text", "data": {"text": content}}
+            chat_id, reply_to, *self._with_metadata_mention(chat_id, metadata, {"type": "text", "data": {"text": content}})
         )
         result = await self._send_chat_segments(chat_id, message_segments)
         if result.get("retcode") != 0:
@@ -234,18 +254,18 @@ class SendMixin:
         return _result_to_send_result(result, "send", extract_msg_id=True)
     async def _send_file_segment(
         self, chat_id: str, path_or_url: str, seg_type: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, timeout: float = 30.0,
+        reply_to: Optional[str] = None, timeout: float = 30.0, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         try:
             file_value = self._as_onebot_file_value(path_or_url)
         except ValueError as e:
             return SendResult(success=False, error=str(e))
-        return await self._send_media(chat_id, seg_type, file_value, caption, reply_to, timeout=timeout)
+        return await self._send_media(chat_id, seg_type, file_value, caption, reply_to, timeout=timeout, metadata=metadata)
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._send_file_segment(chat_id, image_url, "image", caption, reply_to)
+        return await self._send_file_segment(chat_id, image_url, "image", caption, reply_to, metadata=metadata)
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
@@ -255,17 +275,17 @@ class SendMixin:
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        return await self._send_file_segment(chat_id, image_path, "image", caption, reply_to)
+        return await self._send_file_segment(chat_id, image_path, "image", caption, reply_to, metadata=metadata)
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        return await self._send_file_segment(chat_id, audio_path, "record", caption, reply_to)
+        return await self._send_file_segment(chat_id, audio_path, "record", caption, reply_to, metadata=metadata)
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        return await self._send_file_segment(chat_id, video_path, "video", caption, reply_to, timeout=60.0)
+        return await self._send_file_segment(chat_id, video_path, "video", caption, reply_to, timeout=60.0, metadata=metadata)
     async def send_document(
         self,
         chat_id: str,
@@ -486,12 +506,13 @@ class SendMixin:
         except Exception:
             return None
     async def _send_media(self, chat_id: str, seg_type: str, file_val: str,
-                          caption: str = None, reply_to: str = None, timeout: float = 30.0) -> SendResult:
+                          caption: str = None, reply_to: str = None, timeout: float = 30.0,
+                          metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._mark_outbound_media_once(chat_id, seg_type, file_val):
             return SendResult(success=True)
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
-        segments = [{"type": seg_type, "data": {"file": file_val}}]
+        segments = self._with_metadata_mention(chat_id, metadata, {"type": seg_type, "data": {"file": file_val}})
         if caption:
             segments.append({"type": "text", "data": {"text": caption}})
         message = self._message_with_optional_reply(chat_id, reply_to, *segments)

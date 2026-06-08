@@ -42,7 +42,7 @@ class ApprovalMixin:
             f"回复4 拒绝"
         )
         reply_to = self._last_msg_id.get(chat_id)
-        result = await self.send(chat_id, msg, reply_to=reply_to)
+        result = await self.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
         return result
     async def send_update_prompt(
         self,
@@ -60,7 +60,7 @@ class ApprovalMixin:
         )
         reply_to = self._last_msg_id.get(chat_id)
         self._pending_update_chats[chat_id] = time.time()
-        return await self.send(chat_id, msg, reply_to=reply_to)
+        return await self.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
     async def _resolve_approval_shortcut(
         self, chat_id: str, user_text: str, user_id: str = "", admin_qq: str = "",
     ) -> bool:
