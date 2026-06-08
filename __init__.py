@@ -36,8 +36,13 @@ In multi-account mode:
 """
 
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
+
+_PLUGIN_DIR = Path(__file__).resolve().parent
+if str(_PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_DIR))
 
 logger = logging.getLogger(__name__)
 
