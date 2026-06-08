@@ -678,34 +678,39 @@ section("22. 代码行数 & 文件完整性")
 # ============================================================
 
 try:
-    adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
-    with open(adapter_path) as f:
-        lines = f.readlines()
+    base_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
+    adapter_path = base_dir / "onebot_platform" / "adapter.py"
+    legacy_adapter_path = base_dir / "adapter.py"
+    lines = adapter_path.read_text(encoding="utf-8").splitlines(True)
+    legacy_src = legacy_adapter_path.read_text(encoding="utf-8")
     total = len(lines)
 
-    # 检查关键标记
-    has_imports = any("import" in l for l in lines[:50])
-    has_class = any("class OneBotAdapter" in l for l in lines)
-    has_settings = any("class SettingsMixin" in l for l in lines)
-    has_connection = any("class ConnectionMixin" in l for l in lines)
-    has_message = any("class MessageMixin" in l for l in lines)
-    has_command = any("class CommandMixin" in l for l in lines)
-    has_send = any("class SendMixin" in l for l in lines)
-    has_approval = any("class ApprovalMixin" in l for l in lines)
-
+    module_files = {
+        "SettingsMixin": base_dir / "onebot_platform" / "state" / "settings_mixin.py",
+        "ConnectionMixin": base_dir / "onebot_platform" / "transport" / "connection_mixin.py",
+        "MessageMixin": base_dir / "onebot_platform" / "inbound" / "message_mixin.py",
+        "CommandMixin": base_dir / "onebot_platform" / "commands" / "mixin.py",
+        "SendMixin": base_dir / "onebot_platform" / "outbound" / "send_mixin.py",
+        "ApprovalMixin": base_dir / "onebot_platform" / "gateway_integration" / "approvals.py",
+    }
+    joined = "".join(lines)
+    has_imports = any("import" in l for l in lines[:80])
+    has_class = "class OneBotAdapter" in joined
+    has_legacy_facade = "onebot_platform.adapter" in legacy_src
     checks = {
         "imports": has_imports,
-        "SettingsMixin": has_settings,
-        "ConnectionMixin": has_connection,
-        "MessageMixin": has_message,
-        "CommandMixin": has_command,
-        "SendMixin": has_send,
-        "ApprovalMixin": has_approval,
+        "legacy_adapter_facade": has_legacy_facade,
+        "SettingsMixin": module_files["SettingsMixin"].exists(),
+        "ConnectionMixin": module_files["ConnectionMixin"].exists(),
+        "MessageMixin": module_files["MessageMixin"].exists(),
+        "CommandMixin": module_files["CommandMixin"].exists(),
+        "SendMixin": module_files["SendMixin"].exists(),
+        "ApprovalMixin": module_files["ApprovalMixin"].exists(),
         "OneBotAdapter": has_class,
     }
     missing = [k for k, v in checks.items() if not v]
     if not missing:
-        ok(f"文件完整性: {total}行 所有7个Mixin+主类齐全")
+        ok(f"文件完整性: onebot_platform/adapter.py {total}行 功能模块+兼容门面齐全")
     else:
         fail("文件完整性", f"缺失: {missing}")
 except Exception as e:
@@ -730,8 +735,11 @@ try:
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg_path = pathlib.Path(tmpdir) / "config.yaml"
         cfg_path.write_text("display:\n  tool_progress: new\n", encoding="utf-8")
+        import onebot_platform.adapter as modular_adapter
         old_config_path = onebot_adapter._hermes_config_path
+        old_modular_config_path = modular_adapter._hermes_config_path
         onebot_adapter._hermes_config_path = lambda: cfg_path
+        modular_adapter._hermes_config_path = lambda: cfg_path
         try:
             assert _load_gateway_tool_progress_mode("onebot") == "new"
             _save_gateway_tool_progress_mode("off", "onebot")
@@ -740,13 +748,14 @@ try:
             assert "platforms:" in saved and "onebot:" in saved and "tool_progress: 'off'" in saved
         finally:
             onebot_adapter._hermes_config_path = old_config_path
+            modular_adapter._hermes_config_path = old_modular_config_path
     ok("/settool 写入 gateway display.platforms.onebot.tool_progress")
 except Exception as e:
     fail("gateway tool_progress 写入", str(e))
 
 try:
-    adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
-    src = pathlib.Path(adapter_path).read_text(encoding="utf-8")
+    base_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
+    src = (base_dir / "adapter.py").read_text(encoding="utf-8") + (base_dir / "command_mixin.py").read_text(encoding="utf-8")
     assert "_TOOL_PROGRESS_RE" not in src, "不应保留插件层工具提示正则"
     assert "settings.get(\"tool_progress\") is False" not in src, "不应保留插件层工具提示拦截"
     assert "_save_gateway_tool_progress_mode(mode, \"onebot\")" in src, "settool 应写 gateway 层"

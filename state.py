@@ -1,8 +1,8 @@
-"""Compatibility facade for onebot_platform.adapter."""
+"""Compatibility facade for onebot_platform.state.core."""
 
 from importlib import import_module as _import_module
 
-_module = _import_module("onebot_platform.adapter")
+_module = _import_module("onebot_platform.state.core")
 for _name, _value in vars(_module).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
