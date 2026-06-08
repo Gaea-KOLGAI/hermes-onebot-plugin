@@ -921,6 +921,24 @@ except Exception as e:
     fail("媒体发送表驱动", str(e))
 
 try:
+    async def _exercise_outbound_media_dedup():
+        adapter = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3001", "allowed_users": ["12345"]}})
+        adapter._default_conn.http_api_url = ""
+        calls = []
+        async def fake_send_action(conn, action, params, timeout=15.0):
+            calls.append((action, params))
+            return {"retcode": 0, "data": {"message_id": len(calls)}}
+        adapter._send_action_conn = fake_send_action
+        first = await adapter._send_media("private_12345", "image", "file:///tmp/same.png")
+        second = await adapter._send_media("private_12345", "image", "file:///tmp/same.png")
+        assert first.success and second.success
+        assert len(calls) == 1, f"duplicate media sent {len(calls)} times"
+    asyncio.run(_exercise_outbound_media_dedup())
+    ok("出站媒体短时间同路径去重")
+except Exception as e:
+    fail("出站媒体去重", str(e))
+
+try:
     sub_src = textwrap.dedent(inspect.getsource(CommandMixin._cmd_onebot))
     assert ast.dump(ast.parse(sub_src)).count("If(") <= 2
     assert "routes" in sub_src or "_ONEBOT_SUBCOMMANDS" in sub_src
@@ -931,7 +949,7 @@ except Exception as e:
 try:
     adapter_obj = object.__new__(OneBotAdapter)
     adapter_obj._multi_account = False
-    info = asyncio.get_event_loop().run_until_complete(adapter_obj.get_chat_info("group_abc"))
+    info = asyncio.run(adapter_obj.get_chat_info("group_abc"))
     assert info["id"] == "group_abc" and info["type"] == "group"
     ok("get_chat_info 非数字 chat_id 安全 fallback")
 except Exception as e:

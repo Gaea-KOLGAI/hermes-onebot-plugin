@@ -349,6 +349,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._reject_notified: Dict[str, float] = {}
         self._last_seq_cleanup_time: float = 0
+        self._recent_outbound_media: Dict[tuple, float] = {}
         self._media_cache = kwargs.get("media_cache") or _MediaCache(MEDIA_CACHE_DIR)
     @property
     def name(self) -> str:

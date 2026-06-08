@@ -121,6 +121,35 @@ class SendMixin:
             if ext in exts or (mime and mime.startswith(f"{kind}/")):
                 return kind
         return "document"
+    def _outbound_media_key(self, chat_id: str, seg_type: str, file_val: str) -> tuple:
+        raw = str(file_val or "").strip()
+        if raw.startswith("file://"):
+            try:
+                raw = str(Path(url_unquote(urlparse(raw).path)).resolve())
+            except Exception:
+                pass
+        elif not raw.startswith(("http://", "https://")):
+            try:
+                raw = str(Path(os.path.expanduser(raw)).resolve())
+            except Exception:
+                pass
+        return (str(chat_id), str(seg_type), raw)
+    def _mark_outbound_media_once(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
+        now = time.monotonic()
+        recent = getattr(self, "_recent_outbound_media", None)
+        if recent is None:
+            recent = {}
+            self._recent_outbound_media = recent
+        cutoff = now - ttl
+        for key, ts in list(recent.items()):
+            if ts < cutoff:
+                recent.pop(key, None)
+        key = self._outbound_media_key(chat_id, seg_type, file_val)
+        if key in recent:
+            logger.debug("Skipping duplicate outbound media send for %s", key)
+            return False
+        recent[key] = now
+        return True
     def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
         raw = str(path_or_url).strip()
         if raw.startswith(("http://", "https://")):
@@ -458,6 +487,8 @@ class SendMixin:
             return None
     async def _send_media(self, chat_id: str, seg_type: str, file_val: str,
                           caption: str = None, reply_to: str = None, timeout: float = 30.0) -> SendResult:
+        if not self._mark_outbound_media_once(chat_id, seg_type, file_val):
+            return SendResult(success=True)
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
         segments = [{"type": seg_type, "data": {"file": file_val}}]

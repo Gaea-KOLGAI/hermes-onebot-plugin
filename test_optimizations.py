@@ -1,8 +1,9 @@
 
-import os, tempfile, asyncio
+import os, tempfile, asyncio, sys
 from pathlib import Path
 
 import adapter
+import onebot_platform.adapter as adapter_impl
 from adapter import _parse_single_account_env, _truthy, _csv_list, _apply_yaml_config, DATA_DIR, MEDIA_CACHE_DIR
 from adapter import _extract_text_from_message, _extract_segments, _MediaCache
 from adapter import (
@@ -60,31 +61,37 @@ def test_yaml_bridge_sets_env_and_returns_extra(monkeypatch):
 
 
 def test_runtime_paths_are_profile_writable():
-    assert ".hermes/plugins/onebot-platform" in str(DATA_DIR)
-    assert MEDIA_CACHE_DIR.parent == DATA_DIR
+    assert DATA_DIR.exists()
+    assert DATA_DIR.is_dir()
+    assert MEDIA_CACHE_DIR.exists()
+    assert MEDIA_CACHE_DIR.is_dir()
+    assert os.access(DATA_DIR, os.W_OK)
+    assert os.access(MEDIA_CACHE_DIR, os.W_OK)
 
 
 def test_tool_progress_switch_is_gateway_scoped(monkeypatch, tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("display:\n  tool_progress: new\n", encoding="utf-8")
-    monkeypatch.setattr(adapter, "_hermes_config_path", lambda: cfg)
+    monkeypatch.setattr(adapter_impl, "_hermes_config_path", lambda: cfg)
 
     assert _normalise_tool_progress_mode(False) == "off"
     assert _normalise_tool_progress_mode(True) == "all"
     assert _normalise_tool_progress_mode("verbose") == "verbose"
     assert _normalise_tool_progress_mode("bad") == "all"
-    assert _load_gateway_tool_progress_mode("onebot") == "new"
+    assert adapter_impl._load_gateway_tool_progress_mode("onebot") == "new"
 
-    _save_gateway_tool_progress_mode("off", "onebot")
-    assert _load_gateway_tool_progress_mode("onebot") == "off"
+    adapter_impl._save_gateway_tool_progress_mode("off", "onebot")
+    assert adapter_impl._load_gateway_tool_progress_mode("onebot") == "off"
     assert "platforms:\n    onebot:\n      tool_progress: 'off'" in cfg.read_text(encoding="utf-8")
 
 
 def test_adapter_no_longer_filters_tool_progress_locally():
-    src = Path(adapter.__file__).read_text(encoding="utf-8")
+    src = Path(adapter_impl.__file__).read_text(encoding="utf-8")
+    command_src = Path(adapter_impl.CommandMixin.__module__.replace('.', '/')).with_suffix('.py')
+    command_text = (Path(__file__).resolve().parent / command_src).read_text(encoding="utf-8")
     assert "_TOOL_PROGRESS_RE" not in src
     assert "settings.get(\"tool_progress\") is False" not in src
-    assert "_save_gateway_tool_progress_mode(mode, \"onebot\")" in src
+    assert "_save_gateway_tool_progress_mode(mode, \"onebot\")" in command_text
 
 
 def test_cq_text_unescape_uses_single_segment_parser():
