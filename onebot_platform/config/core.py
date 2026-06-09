@@ -238,7 +238,10 @@ def _env_enablement() -> Optional[dict]:
 
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict, *, merge_platform_blocks, csv_list=_csv_list, truthy=_truthy) -> dict:
     effective_cfg = merge_platform_blocks(yaml_cfg, platform_cfg)
-    extra = dict(effective_cfg.get("extra") or {})
+    if not isinstance(effective_cfg, dict):
+        effective_cfg = {}
+    raw_extra = effective_cfg.get("extra") or {}
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
     mapping = {
         "ws_url": "ONEBOT_WS_URL",
         "access_token": "ONEBOT_ACCESS_TOKEN",

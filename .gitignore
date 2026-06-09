@@ -1,0 +1,16 @@
+__pycache__/
+media_cache/
+*.pyc
+*.bak*
+settings.json
+allowed_users.json
+.env
+*.md.bak
+astrbot_comparison.md
+message_segment_alignment_report.md
+refactoring_analysis.md
+review_report.md
+post_upgrade_check.sh
+pre_upgrade_backup.sh
+AUDIT_REPORT.md
+adapter_audit_report.md

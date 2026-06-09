@@ -7,7 +7,7 @@ import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote as url_unquote
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import SendResult
@@ -67,7 +67,7 @@ def _post_onebot_http(http_api_url: str, token: str, action: str, params: dict) 
         return {"success": False, "error": str(e)}
     if result.get("retcode") in (0, 200):
         data = result.get("data") or {}
-        return {"success": True, "message_id": str(data.get("message_id") or data.get("file_id") or "")}
+        return {"success": True, "message_id": str(data.get("message_id") or data.get("file_id") or data.get("forward_id") or "")}
     return {"success": False, "error": result.get("msg") or result.get("wording") or f"{action} failed"}
 
 
@@ -75,9 +75,15 @@ def _file_uri(path: str) -> str:
     raw = str(path or "").strip()
     if not raw:
         raise ValueError("empty standalone file path")
-    if raw.startswith(("http://", "https://", "file://")):
+    if raw.startswith(("http://", "https://")):
         return raw
-    return Path(raw).expanduser().resolve().as_uri()
+    if raw.startswith("file://"):
+        local_path = Path(url_unquote(urlparse(raw).path)).expanduser().resolve()
+    else:
+        local_path = Path(raw).expanduser().resolve()
+    if not str(local_path) or not local_path.is_file():
+        raise ValueError(f"local file not found: {raw}")
+    return local_path.as_uri()
 
 
 async def _standalone_send(
@@ -96,6 +102,7 @@ async def _standalone_send(
     **kwargs,
 ) -> dict:
     extra = (config.extra or {}) if config and hasattr(config, "extra") else {}
+    extra = extra if isinstance(extra, dict) else {}
     account = _account_extra(extra, chat_id, extract_account_from_chat_id)
     ws_url = account.get("ws_url", "") or os.getenv("ONEBOT_WS_URL", "") or extra.get("ws_url", "")
     token = account.get("access_token", "") or os.getenv("ONEBOT_ACCESS_TOKEN", "") or extra.get("access_token", "")

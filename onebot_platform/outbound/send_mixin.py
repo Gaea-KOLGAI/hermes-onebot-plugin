@@ -37,7 +37,7 @@ class SendMixin:
             await conn.rate_limiter.acquire()
             await ws.send(json.dumps(payload))
             result = await asyncio.wait_for(fut, timeout=timeout)
-            if result.get("status") == "failed" or (result.get("retcode") is not None and result.get("retcode") != 0):
+            if result.get("status") == "failed" or (result.get("retcode") is not None and result.get("retcode") not in (0, 200)):
                 msg = (result.get("msg", "") or result.get("wording", "") or "").lower()
                 if "不支持" in msg or "not supported" in msg or "unknown action" in msg:
                     self._unsupported_actions.add(action)
@@ -62,7 +62,7 @@ class SendMixin:
             result = await self._send_action_conn(conn, action, params)
         except (ValueError, TypeError) as e:
             return
-        if result.get("retcode") != 0:
+        if result.get("retcode") not in (0, 200):
             logger.debug("Reply send failed: retcode=%s", result.get("retcode"))
     async def _send_action(self, action: str, params: dict, timeout: float = 15.0) -> dict:
         return await self._send_action_conn(self._default_conn, action, params, timeout)
@@ -178,14 +178,15 @@ class SendMixin:
             raise ValueError("empty outbound file path")
         if raw.startswith(("http://", "https://")):
             return raw
+        if raw.startswith("file://"):
+            if require_safe_local and not _is_safe_outbound_local_path(raw):
+                raise ValueError("local file path is outside allowed outbound media roots")
+            staged = self._media_cache.prepare_outbound_local_file(raw) if require_safe_local else None
+            return Path(staged).resolve().as_uri() if staged else raw
         if require_safe_local:
             staged = self._media_cache.prepare_outbound_local_file(raw)
             if staged:
                 raw = staged
-        if raw.startswith("file://"):
-            if require_safe_local and not _is_safe_outbound_local_path(raw):
-                raise ValueError("local file path is outside allowed outbound media roots")
-            return raw
         p = Path(os.path.expanduser(raw)).resolve()
         if require_safe_local and not _is_safe_outbound_local_path(p):
             raise ValueError("local file path is outside allowed outbound media roots")
@@ -253,7 +254,7 @@ class SendMixin:
             chat_id, reply_to, *self._with_metadata_mention(chat_id, metadata, {"type": "text", "data": {"text": content}})
         )
         result = await self._send_chat_segments(chat_id, message_segments)
-        if result.get("retcode") != 0:
+        if result.get("retcode") not in (0, 200):
             logger.debug("Send failed: retcode=%s", result.get("retcode"))
         return _result_to_send_result(result, "send", extract_msg_id=True)
     async def _send_file_segment(
@@ -303,11 +304,13 @@ class SendMixin:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
         raw_path = str(file_path).strip()
-        is_url = raw_path.startswith(("http://", "https://", "file://"))
+        if not raw_path:
+            return SendResult(success=False, error="empty outbound file path")
+        is_remote_url = raw_path.startswith(("http://", "https://"))
         local_path = ""
         if raw_path.startswith("file://"):
             local_path = url_unquote(urlparse(raw_path).path)
-        elif not raw_path.startswith(("http://", "https://")):
+        elif not is_remote_url:
             local_path = str(Path(os.path.expanduser(raw_path)).resolve())
             if not os.path.isfile(local_path):
                 return SendResult(success=False, error=f"file not found: {raw_path}")
@@ -315,7 +318,7 @@ class SendMixin:
         name = file_name or os.path.basename(name_source) or "file"
         try:
             trusted_local = bool((metadata or {}).get("trusted_local_file"))
-            file_uri = raw_path if is_url else self._as_onebot_file_value(local_path, require_safe_local=not trusted_local)
+            file_uri = raw_path if is_remote_url else self._as_onebot_file_value(raw_path, require_safe_local=not trusted_local)
         except ValueError as e:
             return SendResult(success=False, error=str(e))
         tid = _safe_target_id(target_id)
@@ -506,7 +509,7 @@ class SendMixin:
         try:
             result = await self._send_action_conn(conn, "delete_msg", {"message_id": mid}, timeout=timeout)
             retcode = result.get("retcode")
-            if retcode == 0:
+            if retcode in (0, 200):
                 return True
             if retcode == -1:
                 return None
@@ -572,7 +575,7 @@ class SendMixin:
             return SendResult(success=False, error="No messages to forward")
         action = f"send_{msg_kind}_forward_msg"
         result = await self._send_action_conn(conn, action, {_onebot_target_key(msg_kind): tid, "messages": nodes}, timeout=30.0)
-        if result.get("retcode") == 0:
+        if result.get("retcode") in (0, 200):
             d = result.get("data", {})
             return SendResult(success=True, message_id=str(d.get("message_id", "") or d.get("forward_id", "")))
         return SendResult(success=False, error=result.get("msg", "send_forward_message failed"))

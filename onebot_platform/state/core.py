@@ -21,8 +21,16 @@ logger = logging.getLogger(__name__)
 
 class DedupCache:
     def __init__(self, ttl: float, max_size: int):
-        self._ttl = max(0.0, float(ttl))
-        self._max_size = max(1, int(max_size or 1))
+        try:
+            ttl_val = float(ttl)
+        except (TypeError, ValueError):
+            ttl_val = 60.0
+        try:
+            max_size_val = int(max_size or 1)
+        except (TypeError, ValueError):
+            max_size_val = 1
+        self._ttl = max(0.0, ttl_val)
+        self._max_size = max(1, max_size_val)
         self._cache: OrderedDict = OrderedDict()
 
     def is_duplicate(self, dedup_key: str) -> bool:
@@ -44,9 +52,17 @@ class DedupCache:
 
 class RateLimiter:
     def __init__(self, rate: float, burst: int):
-        self._rate = rate
-        self._burst = float(burst)
-        self._tokens = float(burst)
+        try:
+            rate_val = float(rate)
+        except (TypeError, ValueError):
+            rate_val = 1.0
+        try:
+            burst_val = float(burst)
+        except (TypeError, ValueError):
+            burst_val = 1.0
+        self._rate = max(0.001, rate_val)
+        self._burst = max(1.0, burst_val)
+        self._tokens = self._burst
         self._last = time.monotonic()
         self._lock = asyncio.Lock()
 
@@ -67,7 +83,11 @@ class RateLimiter:
 
 class MemberCache:
     def __init__(self, ttl: float = 300):
-        self._ttl = ttl
+        try:
+            ttl_val = float(ttl)
+        except (TypeError, ValueError):
+            ttl_val = 300.0
+        self._ttl = max(0.0, ttl_val)
         self._max_size = 5000
         self._cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
 

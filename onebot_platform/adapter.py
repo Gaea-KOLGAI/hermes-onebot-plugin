@@ -44,7 +44,7 @@ from onebot_platform.config.core import (
     _message_fingerprint,
     _guess_media_segment_type as _config_utils_guess_media_segment_type,
     _parse_single_account_env as _config_utils_parse_single_account_env,
-    _config_extra,
+    _config_extra as _config_utils_config_extra,
     _configured_ws_urls,
     validate_config as _config_utils_validate_config,
     is_configured as _config_utils_is_configured,
@@ -244,22 +244,6 @@ from onebot_platform.inbound.message_mixin import MessageMixin
 from onebot_platform.commands.mixin import CommandMixin
 from onebot_platform.outbound.send_mixin import SendMixin
 from onebot_platform.gateway_integration.approvals import ApprovalMixin, _APPROVAL_CHOICES, _UPDATE_CHOICES
-def _parse_single_account_env(extra: dict) -> dict:
-    extra = extra if isinstance(extra, dict) else {}
-    def _csv_env(key: str, fallback_key: str) -> list:
-        raw = os.getenv(key)
-        return _csv_list(raw) if raw else _csv_list(extra.get(fallback_key, []))
-    return {
-        "ws_url": os.getenv("ONEBOT_WS_URL") or extra.get("ws_url", ""),
-        "access_token": os.getenv("ONEBOT_ACCESS_TOKEN") or extra.get("access_token", ""),
-        "ws_mode": os.getenv("ONEBOT_WS_MODE") or extra.get("ws_mode", "forward"),
-        "allowed_users": _csv_env("ONEBOT_ALLOWED_USERS", "allowed_users"),
-        "group_ids": _csv_env("ONEBOT_GROUP_IDS", "group_ids"),
-        "allow_all": _truthy(os.getenv("ONEBOT_ALLOW_ALL_USERS"), _truthy(extra.get("allow_all"), False)),
-        "home_channel": os.getenv("ONEBOT_HOME_CHANNEL") or str(extra.get("home_channel", "")),
-        "admin_qq": os.getenv("ONEBOT_ADMIN_QQ") or str(extra.get("admin_qq", "") or ""),
-        "http_api_url": os.getenv("ONEBOT_HTTP_API_URL") or str(extra.get("http_api_url", "")),
-    }
 def _onebot_platform_blocks(yaml_cfg: dict) -> List[dict]:
     if not isinstance(yaml_cfg, dict):
         return []
@@ -305,6 +289,8 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
         if isinstance(accounts_cfg, list) and accounts_cfg:
             self._multi_account = True
             for acct in accounts_cfg:
+                if not isinstance(acct, dict):
+                    continue
                 name = str(acct.get("name", "default")).strip()
                 if not name:
                     continue
@@ -388,9 +374,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
                 pass
         return {"id": chat_id, "name": name, "type": chat_type}
 def _config_extra(config) -> dict:
-    if isinstance(config, dict):
-        return config.get("extra", {}) or {}
-    return getattr(config, "extra", {}) or {}
+    return _config_utils_config_extra(config)
 def check_requirements() -> bool:
     return WEBSOCKETS_AVAILABLE
 def validate_config(config) -> bool:
