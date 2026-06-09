@@ -106,6 +106,7 @@ from onebot_platform.state.core import (
     _CmdDef,
 )
 from onebot_platform.outbound.results import (
+    _read_bounded_json_response,
     _safe_int,
     _safe_target_id,
     _result_to_send_result,

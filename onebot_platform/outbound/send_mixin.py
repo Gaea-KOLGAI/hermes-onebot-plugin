@@ -50,6 +50,9 @@ class SendMixin:
             raise
         except Exception as e:
             self._cleanup_echo(conn, echo)
+            if conn.http_api_url:
+                logger.debug("WS send failed for %s; trying HTTP fallback: %s", action, e)
+                return await self._http_call_conn(conn, action, params)
             return {"status": "failed", "retcode": -1, "msg": str(e)}
         finally:
             self._cleanup_echo(conn, echo)
@@ -80,7 +83,7 @@ class SendMixin:
         def _sync_call():
             req = urllib.request.Request(url, data=payload, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
+                return _read_bounded_json_response(resp)
         try:
             return await asyncio.to_thread(_sync_call)
         except urllib.error.HTTPError as e:
@@ -156,7 +159,7 @@ class SendMixin:
             except Exception:
                 pass
         return (str(chat_id), str(seg_type), raw)
-    def _mark_outbound_media_once(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
+    def _prune_recent_outbound_media(self, ttl: float = 20.0) -> dict:
         now = time.monotonic()
         recent = getattr(self, "_recent_outbound_media", None)
         if recent is None:
@@ -166,11 +169,21 @@ class SendMixin:
         for key, ts in list(recent.items()):
             if ts < cutoff:
                 recent.pop(key, None)
+        return recent
+    def _is_recent_outbound_media(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
+        recent = self._prune_recent_outbound_media(ttl)
+        key = self._outbound_media_key(chat_id, seg_type, file_val)
+        if key in recent:
+            logger.debug("Skipping duplicate outbound media send for %s", key)
+            return True
+        return False
+    def _mark_outbound_media_once(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
+        recent = self._prune_recent_outbound_media(ttl)
         key = self._outbound_media_key(chat_id, seg_type, file_val)
         if key in recent:
             logger.debug("Skipping duplicate outbound media send for %s", key)
             return False
-        recent[key] = now
+        recent[key] = time.monotonic()
         return True
     def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
         raw = str(path_or_url).strip()
@@ -183,6 +196,8 @@ class SendMixin:
                 raise ValueError("local file path is outside allowed outbound media roots")
             staged = self._media_cache.prepare_outbound_local_file(raw) if require_safe_local else None
             return Path(staged).resolve().as_uri() if staged else raw
+        if require_safe_local and not _is_safe_outbound_local_path(raw):
+            raise ValueError("local file path is outside allowed outbound media roots")
         if require_safe_local:
             staged = self._media_cache.prepare_outbound_local_file(raw)
             if staged:
@@ -317,8 +332,7 @@ class SendMixin:
         name_source = local_path or urlparse(raw_path).path or raw_path
         name = file_name or os.path.basename(name_source) or "file"
         try:
-            trusted_local = bool((metadata or {}).get("trusted_local_file"))
-            file_uri = raw_path if is_remote_url else self._as_onebot_file_value(raw_path, require_safe_local=not trusted_local)
+            file_uri = raw_path if is_remote_url else self._as_onebot_file_value(raw_path)
         except ValueError as e:
             return SendResult(success=False, error=str(e))
         tid = _safe_target_id(target_id)
@@ -519,7 +533,7 @@ class SendMixin:
     async def _send_media(self, chat_id: str, seg_type: str, file_val: str,
                           caption: str = None, reply_to: str = None, timeout: float = 30.0,
                           metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        if not self._mark_outbound_media_once(chat_id, seg_type, file_val):
+        if self._is_recent_outbound_media(chat_id, seg_type, file_val):
             return SendResult(success=True)
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
@@ -527,7 +541,9 @@ class SendMixin:
         if caption:
             segments.append({"type": "text", "data": {"text": caption}})
         message = self._message_with_optional_reply(chat_id, reply_to, *segments)
-        if conn.http_api_url:
+        ws = conn.ws
+        ws_is_ready = ws is not None and getattr(ws, "close_code", None) is None
+        if conn.http_api_url and not ws_is_ready:
             try:
                 tid = _safe_target_id(target_id)
                 if isinstance(tid, SendResult):
@@ -538,13 +554,18 @@ class SendMixin:
                 retcode = result.get("retcode", -1)
                 if retcode in (0, 200):
                     data = result.get("data") or {}
-                    return SendResult(success=True, message_id=str(data.get("message_id", "")))
+                    if self._mark_outbound_media_once(chat_id, seg_type, file_val):
+                        return SendResult(success=True, message_id=str(data.get("message_id", "")))
+                    return SendResult(success=True)
             except Exception as e:
                 logger.debug("HTTP fallback for media send failed: %s", e)
         action, params = self._send_msg_params(msg_kind, target_id, message)
         result = await self._send_action_conn(conn, action, params, timeout=timeout)
         retcode = result.get("retcode")
-        if retcode == 200:
+        if retcode in (0, 200):
+            if self._mark_outbound_media_once(chat_id, seg_type, file_val):
+                data = result.get("data") or {}
+                return SendResult(success=True, message_id=str(data.get("message_id", "")))
             return SendResult(success=True)
         if retcode == -1:
             msg = result.get("msg", "")

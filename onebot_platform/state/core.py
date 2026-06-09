@@ -173,6 +173,12 @@ class _MediaCache:
             return None
         if not src.is_file() or src.is_symlink():
             return None
+        try:
+            if src.stat().st_size > self._max_size:
+                logger.warning("Refusing to stage oversized outbound OneBot attachment %s", src)
+                return None
+        except OSError:
+            return None
         cache_dir = self._dir.resolve()
         if src == cache_dir or cache_dir in src.parents:
             return str(src)

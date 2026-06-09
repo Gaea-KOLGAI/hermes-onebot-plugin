@@ -218,3 +218,109 @@ def test_send_document_rejects_bool_target_id():
     assert result.success is False
     assert "target_id" in result.error
     assert bot.calls == []
+
+
+def test_send_image_rejects_bare_local_path_outside_allowed_roots():
+    bot = _CaptureBot()
+    result = asyncio.run(bot.send_image("private_12345", "/etc/hosts"))
+    assert result.success is False
+    assert "outside allowed" in result.error
+    assert bot.calls == []
+
+
+def test_send_document_ignores_trusted_local_file_metadata_for_unsafe_paths():
+    bot = _CaptureBot()
+    result = asyncio.run(bot.send_document(
+        "private_12345",
+        "file:///etc/hosts",
+        file_name="hosts",
+        metadata={"trusted_local_file": True},
+    ))
+    assert result.success is False
+    assert "outside allowed" in result.error
+    assert bot.calls == []
+
+
+def test_send_action_uses_http_fallback_when_ws_send_raises(monkeypatch):
+    bot = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3000/ws", "http_api_url": "http://127.0.0.1:3001"}})
+    conn = bot._default_conn
+    class Ws:
+        close_code = None
+        async def send(self, payload):
+            raise OSError("broken ws")
+    conn.ws = Ws()
+    http_calls = []
+    async def fake_http(conn_arg, action, params):
+        http_calls.append((conn_arg, action, params))
+        return {"retcode": 0, "data": {"message_id": 9}}
+    monkeypatch.setattr(bot, "_http_call_conn", fake_http)
+    result = asyncio.run(bot._send_action_conn(conn, "send_private_msg", {"user_id": 1, "message": []}))
+    assert result["retcode"] == 0
+    assert http_calls and http_calls[0][1] == "send_private_msg"
+    assert conn.echo_futures == {}
+
+
+def test_failed_media_send_is_retryable_not_suppressed_by_dedup():
+    class Bot(_CaptureBot):
+        async def _send_action_conn(self, conn, action, params, timeout=30.0):
+            self.calls.append((action, params, timeout))
+            if len(self.calls) == 1:
+                return {"retcode": -1, "msg": "timeout"}
+            return {"retcode": 0, "data": {"message_id": 456}}
+    bot = Bot()
+    bot._default_conn.http_api_url = ""
+    bot._default_conn.ws = SimpleNamespace(close_code=None)
+    result1 = asyncio.run(bot._send_media("private_12345", "image", "https://example.com/a.png"))
+    result2 = asyncio.run(bot._send_media("private_12345", "image", "https://example.com/a.png"))
+    assert result1.success is False
+    assert result1.retryable is True
+    assert result2.success is True
+    assert result2.message_id == "456"
+    assert len(bot.calls) == 2
+
+
+def test_successful_media_send_is_deduped_after_delivery_only():
+    class Bot(_CaptureBot):
+        async def _send_action_conn(self, conn, action, params, timeout=30.0):
+            self.calls.append((action, params, timeout))
+            return {"retcode": 0, "data": {"message_id": 789}}
+    bot = Bot()
+    bot._default_conn.http_api_url = ""
+    bot._default_conn.ws = SimpleNamespace(close_code=None)
+    result1 = asyncio.run(bot._send_media("private_12345", "image", "https://example.com/a.png"))
+    result2 = asyncio.run(bot._send_media("private_12345", "image", "https://example.com/a.png"))
+    assert result1.success is True
+    assert result1.message_id == "789"
+    assert result2.success is True
+    assert len(bot.calls) == 1
+
+
+def test_prepare_outbound_local_file_rejects_oversized_file(tmp_path):
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"12345")
+    cache = _MediaCache(tmp_path / "cache", max_file_size=4)
+    assert cache.prepare_outbound_local_file(str(src)) is None
+    assert list((tmp_path / "cache").glob("outbound-*")) == []
+
+
+def test_read_bounded_json_response_rejects_oversized_body():
+    class Resp:
+        def read(self, n=-1):
+            return b"x" * n
+    try:
+        results_impl._read_bounded_json_response(Resp(), max_bytes=4)
+    except ValueError as exc:
+        assert "exceeds" in str(exc)
+    else:
+        raise AssertionError("oversized response should be rejected")
+
+
+def test_post_onebot_http_rejects_oversized_response_body(monkeypatch):
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, n=-1): return b"x" * n
+    monkeypatch.setattr(results_impl.urllib.request, "urlopen", lambda req, timeout=60: Resp())
+    result = results_impl._post_onebot_http("http://127.0.0.1:3001", "", "send_private_msg", {})
+    assert result["success"] is False
+    assert "exceeds" in result["error"]

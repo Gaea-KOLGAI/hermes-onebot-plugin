@@ -907,9 +907,9 @@ except Exception as e:
 
 try:
     src = inspect.getsource(SendMixin.send_document)
-    assert "trusted_local_file" in src
-    assert "require_safe_local=not trusted_local" in src
-    ok("send_document 默认沿用出站本地路径限制")
+    assert "trusted_local_file" not in src
+    assert "_as_onebot_file_value(raw_path)" in src
+    ok("send_document 强制沿用出站本地路径限制")
 except Exception as e:
     fail("send_document 出站路径限制", str(e))
 

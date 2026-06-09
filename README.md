@@ -226,7 +226,7 @@ MEDIA:/tmp/example.png
 
 保留 `send_forward_message` 等实际使用的扩展发送方法。未使用且未实测的轻互动发送能力已移除，避免继续堆积维护成本。
 
-适配器当前约 2885 行。更新后需至少通过 `py_compile` 和 `test_full_chain.py`。
+适配器已拆成兼容门面和功能模块，当前约 53 个 Python 文件。更新后需至少通过 `py_compile`、`pytest` 回归测试和 `test_full_chain.py`。
 
 ## 环境变量
 
@@ -288,6 +288,7 @@ tail -100 ~/.hermes/logs/gateway.log
 
 ```bash
 PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 -m py_compile adapter.py __init__.py
+PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 -m pytest -q test_review_hardening.py test_optimizations.py
 PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 test_full_chain.py
 PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 test_optimizations.py
 ```
@@ -315,6 +316,10 @@ PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packag
 - 边界条件
 - 安全修复验证
 - 代码复用验证
+- 出站本地文件安全
+- OneBot HTTP 响应限长
+- WebSocket 失败 HTTP 兜底
+- 媒体发送失败重试和成功后去重
 
 ## 适用场景
 

@@ -13,6 +13,32 @@ from typing import Any, Callable, Optional
 from gateway.platforms.base import SendResult
 
 
+_MAX_ONEBOT_HTTP_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_bounded_json_response(resp, *, max_bytes: int = _MAX_ONEBOT_HTTP_RESPONSE_BYTES) -> dict:
+    """Read a OneBot HTTP JSON response with a hard memory cap."""
+    chunks = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        try:
+            chunk = resp.read(min(65536, remaining))
+        except TypeError:
+            chunk = resp.read()
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+        if remaining <= 0:
+            break
+        if len(chunk) < min(65536, remaining + len(chunk)):
+            break
+    raw = b"".join(chunks)
+    if len(raw) > max_bytes:
+        raise ValueError(f"OneBot HTTP response exceeds {max_bytes} bytes")
+    return json.loads(raw.decode())
+
+
 def _safe_int(val, label: str = "") -> int:
     if isinstance(val, bool):
         raise ValueError(f"Invalid {label or 'value'}: {val!r}")
@@ -60,7 +86,7 @@ def _post_onebot_http(http_api_url: str, token: str, action: str, params: dict) 
     req = urllib.request.Request(f"{http_api_url.rstrip('/')}/{action}", data=payload, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode())
+            result = _read_bounded_json_response(resp)
     except urllib.error.HTTPError as e:
         return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
     except Exception as e:
