@@ -266,90 +266,58 @@ def _stringify_segment_content(value: Any) -> str:
     return ""
 
 
+def _first(data: dict, *keys, default: str = "") -> str:
+    return next((str(data.get(k)).strip() for k in keys if data.get(k)), default)
+
+
+def _preview(text: str, limit: int) -> str:
+    return text[:limit] + "…" if len(text) > limit else text
+
+
 def _fmt_markdown(data):
-    raw = data.get("content") or data.get("data") or data.get("text") or ""
-    text = strip_markdown(_stringify_segment_content(raw))
-    if not text:
-        return "[Markdown消息]"
-    if len(text) > MAX_MULTIMSG_PREVIEW:
-        text = text[:MAX_MULTIMSG_PREVIEW] + "…"
-    return f"[Markdown消息]\n{text}"
+    text = strip_markdown(_stringify_segment_content(data.get("content") or data.get("data") or data.get("text") or ""))
+    return f"[Markdown消息]\n{_preview(text, MAX_MULTIMSG_PREVIEW)}" if text else "[Markdown消息]"
 
 
 def _fmt_node(data):
-    name = str(data.get("name") or data.get("nickname") or data.get("sender_name") or "匿名").strip() or "匿名"
-    uid = str(data.get("uin") or data.get("user_id") or data.get("sender_id") or "").strip()
-    content = _stringify_segment_content(data.get("content") or data.get("message") or "")
+    name = _first(data, "name", "nickname", "sender_name", default="匿名") or "匿名"
+    uid = _first(data, "uin", "user_id", "sender_id")
     prefix = f"{name}({uid})" if uid else name
-    if content:
-        if len(content) > MAX_TITLE_PREVIEW:
-            content = content[:MAX_TITLE_PREVIEW] + "…"
-        return f"[转发节点: {prefix}: {content}]"
-    return f"[转发节点: {prefix}]"
+    content = _stringify_segment_content(data.get("content") or data.get("message") or "")
+    return f"[转发节点: {prefix}: {_preview(content, MAX_TITLE_PREVIEW)}]" if content else f"[转发节点: {prefix}]"
 
 
-_SEGMENT_FORMATTERS: Dict[str, Callable] = {
-    "file": lambda d: (
-        f"[文件: {d.get('name') or d.get('file') or '未知文件'} {d.get('url') or d.get('file_url') or ''}]"
-        if (d.get("url") or d.get("file_url") or "").startswith("http")
-        else f"[文件: {d.get('name') or d.get('file') or '未知文件'} (file_id={d.get('file_id') or d.get('id') or ''})]"
-        if d.get("file_id") or d.get("id")
-        else f"[文件: {d.get('name') or d.get('file') or '未知文件'}]"
-    ),
-    "location": lambda d: (
-        f"[位置: {d.get('title', '')} ({d.get('lat', '')},{d.get('lon', '')})]" if d.get("title")
-        else f"[位置: ({d.get('lat', '')},{d.get('lon', '')})]" if d.get("lat") and d.get("lon")
-        else "[位置]"
-    ),
-    "share": lambda d: (
-        f"[分享: {d.get('title', '')} {d.get('url', '')}]" if d.get("title") and d.get("url")
-        else f"[分享: {d.get('title', '')}]" if d.get("title")
-        else f"[分享: {d.get('url', '')}]" if d.get("url")
-        else "[分享]"
-    ),
-    "contact": lambda d: (
-        f"[推荐群: {d.get('id', '')}]" if d.get("type") == "group"
-        else f"[推荐好友: {d.get('id', '')}]"
-    ),
-    "music": lambda d: (
-        f"[音乐: {d.get('title', '')} {d.get('type', '')}]" if d.get("title")
-        else f"[音乐: {d.get('type', '')}:{d.get('id', '')}]" if d.get("id")
-        else f"[音乐: {d.get('type', '')}]"
-    ),
-    "mface": lambda d: f"[商城表情: {n}]" if (n := d.get("name") or d.get("face_id") or d.get("emoji_id") or "") else "[商城表情]",
-    "rps": _fmt_rps,
-    "dice": lambda d: f"[骰子: {d.get('id', d.get('result', ''))}]",
-    "basketball": lambda d: f"[篮球: {d.get('id', d.get('result', ''))}]",
-    "poke": lambda d: f"[戳一戳: {d.get('qq') or d.get('target_id') or ''}]",
-    "anonymous": lambda d: f"[匿名: {d.get('name') or d.get('id') or ''}]",
-    "markdown": _fmt_markdown,
-    "node": _fmt_node,
+def _fmt_file(d):
+    name = d.get("name") or d.get("file") or "未知文件"
+    url = d.get("url") or d.get("file_url") or ""
+    file_id = d.get("file_id") or d.get("id") or ""
+    if str(url).startswith("http"):
+        return f"[文件: {name} {url}]"
+    return f"[文件: {name} (file_id={file_id})]" if file_id else f"[文件: {name}]"
+
+
+_SEGMENT_SPECS: Dict[str, Tuple[str, Callable]] = {
+    "file": ("file_seg", _fmt_file),
+    "location": ("location_msg", lambda d: f"[位置: {d.get('title', '')} ({d.get('lat', '')},{d.get('lon', '')})]" if d.get("title") else f"[位置: ({d.get('lat', '')},{d.get('lon', '')})]" if d.get("lat") and d.get("lon") else "[位置]"),
+    "share": ("share_msg", lambda d: f"[分享: {d.get('title', '')} {d.get('url', '')}]" if d.get("title") and d.get("url") else f"[分享: {d.get('title', '')}]" if d.get("title") else f"[分享: {d.get('url', '')}]" if d.get("url") else "[分享]"),
+    "contact": ("contact_msg", lambda d: f"[推荐群: {d.get('id', '')}]" if d.get("type") == "group" else f"[推荐好友: {d.get('id', '')}]"),
+    "music": ("music_msg", lambda d: f"[音乐: {d.get('title', '')} {d.get('type', '')}]" if d.get("title") else f"[音乐: {d.get('type', '')}:{d.get('id', '')}]" if d.get("id") else f"[音乐: {d.get('type', '')}]"),
+    "mface": ("mface_msg", lambda d: f"[商城表情: {n}]" if (n := d.get("name") or d.get("face_id") or d.get("emoji_id") or "") else "[商城表情]"),
+    "rps": ("rps_msg", _fmt_rps),
+    "dice": ("dice_msg", lambda d: f"[骰子: {d.get('id', d.get('result', ''))}]"),
+    "basketball": ("basketball_msg", lambda d: f"[篮球: {d.get('id', d.get('result', ''))}]"),
+    "poke": ("poke_msg", lambda d: f"[戳一戳: {d.get('qq') or d.get('target_id') or ''}]"),
+    "anonymous": ("anonymous_msg", lambda d: f"[匿名: {d.get('name') or d.get('id') or ''}]"),
+    "markdown": ("markdown_msg", _fmt_markdown),
+    "node": ("node_msg", _fmt_node),
 }
 
-_SEGMENT_KEY_MAP = {
-    "file": "file_seg",
-    "location": "location_msg",
-    "share": "share_msg",
-    "contact": "contact_msg",
-    "music": "music_msg",
-    "mface": "mface_msg",
-    "rps": "rps_msg",
-    "dice": "dice_msg",
-    "basketball": "basketball_msg",
-    "poke": "poke_msg",
-    "anonymous": "anonymous_msg",
-    "markdown": "markdown_msg",
-    "node": "node_msg",
-}
+_SEGMENT_FORMATTERS: Dict[str, Callable] = {k: v[1] for k, v in _SEGMENT_SPECS.items()}
+_SEGMENT_KEY_MAP = {k: v[0] for k, v in _SEGMENT_SPECS.items()}
 
 
 def _extract_typed_segments(segments: List[Dict]) -> Dict[str, Optional[str]]:
-    result: Dict[str, Optional[str]] = {}
-    for seg_type, key in _SEGMENT_KEY_MAP.items():
-        formatter = _SEGMENT_FORMATTERS.get(seg_type)
-        if formatter:
-            result[key] = _extract_seg_text(segments, seg_type, formatter)
-    return result
+    return {key: _extract_seg_text(segments, seg_type, formatter) for seg_type, (key, formatter) in _SEGMENT_SPECS.items()}
 
 
 def _make_chat_id(data: dict, account_name: str = "") -> str:

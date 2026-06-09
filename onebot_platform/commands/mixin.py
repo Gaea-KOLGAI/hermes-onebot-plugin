@@ -158,23 +158,23 @@ class CommandMixin:
         await self._send_reply_async_conn(conn, data, "\n".join(lines).rstrip())
     async def _persist_group_ids(self, conn):
         await self._persist_account_setting(conn, "group_ids_by_account", conn.group_ids)
-    async def _cmd_toggle_setting(self, conn, data, args, setting_key, label, cmd_name, is_global=False):
+    async def _onoff_arg(self, conn, data, args, cmd_name):
         val = args.strip().lower()
         if val not in ("on", "off"):
             await self._send_reply_async_conn(conn, data, f"✗ 用法: /{cmd_name} on|off")
+            return None
+        return val
+    async def _cmd_toggle_setting(self, conn, data, args, setting_key, label, cmd_name, is_global=False):
+        val = await self._onoff_arg(conn, data, args, cmd_name)
+        if val is None:
             return
-        if is_global:
-            cs = self._get_global_settings()
-        else:
-            account_name = conn.name if self._multi_account else ""
-            cs = self._get_chat_settings(_make_chat_id(data, account_name))
+        cs = self._get_global_settings() if is_global else self._get_chat_settings(_make_chat_id(data, conn.name if self._multi_account else ""))
         cs[setting_key] = (val == "on")
         await self._save_settings()
         await self._send_reply_async_conn(conn, data, f"✓ {label}: {'开启' if val == 'on' else '关闭'}")
     async def _cmd_settool(self, conn, data, args, user_id, admin_qq):
-        val = args.strip().lower()
-        if val not in ("on", "off"):
-            await self._send_reply_async_conn(conn, data, "✗ 用法: /settool on|off")
+        val = await self._onoff_arg(conn, data, args, "settool")
+        if val is None:
             return
         mode = "all" if val == "on" else "off"
         try:
@@ -187,9 +187,8 @@ class CommandMixin:
     async def _cmd_setmd(self, conn, data, args, user_id, admin_qq):
         await self._cmd_toggle_setting(conn, data, args, "strip_markdown", "Markdown清理", "setmd")
     async def _cmd_setallowall(self, conn, data, args, user_id, admin_qq):
-        val = args.strip().lower()
-        if val not in ("on", "off"):
-            await self._send_reply_async_conn(conn, data, "✗ 用法: /setallowall on|off")
+        val = await self._onoff_arg(conn, data, args, "setallowall")
+        if val is None:
             return
         conn.allow_all = (val == "on")
         gs = self._get_global_settings()

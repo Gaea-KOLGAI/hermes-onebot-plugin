@@ -304,8 +304,7 @@ class SendMixin:
             await self.set_input_status(chat_id, event_type=1)
         except Exception:
             pass
-    def format_message(self, content: str) -> str:
-        return _format_message(content)
+    format_message = staticmethod(_format_message)
     async def edit_message(
         self,
         chat_id: str,

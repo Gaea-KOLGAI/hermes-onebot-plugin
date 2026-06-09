@@ -173,15 +173,6 @@ _MEDIA_KIND_EXTS = {
     "video": _VIDEO_EXTS,
     "image": _IMAGE_EXTS,
 }
-def _hermes_onebot_data_dir() -> Path:
-    try:
-        from hermes_constants import get_hermes_home
-        base = get_hermes_home()
-    except Exception:
-        base = Path.home() / ".hermes"
-    path = base / "plugins" / "onebot-platform"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 DATA_DIR, MEDIA_CACHE_DIR, OUTBOUND_FILE_ALLOWED_ROOTS = build_runtime_paths()
 def _hermes_config_path() -> Path:
     return _config_utils_hermes_config_path()

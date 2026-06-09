@@ -304,66 +304,54 @@ class MessageMixin:
     _FORWARD_MAX_DEPTH = 3
     _FORWARD_MAX_FETCHES = 8
     _FORWARD_MAX_IMAGES = 10
+    @staticmethod
+    def _short(text: str, limit: int = MAX_QUOTE_TEXT) -> str:
+        return text[:limit] + "…" if len(text) > limit else text
+    def _take_forward_images(self, dst: List[str], src: List[str]) -> bool:
+        if not src or len(dst) >= self._FORWARD_MAX_IMAGES:
+            return False
+        dst.extend(src[:self._FORWARD_MAX_IMAGES - len(dst)])
+        return True
+    async def _forward_line_parts(self, segments: List[Dict], raw_content, conn, fwd_images: List[str], depth: int, seen: set, fetch_count: List[int]) -> List[str]:
+        parts = [_extract_text_from_message(raw_content)]
+        if self._take_forward_images(fwd_images, _extract_images(segments)):
+            parts.append("[图片]")
+        parts.extend(x for x in (_extract_json_card(segments), _extract_xml(segments), *_extract_typed_segments(segments).values()) if x)
+        try:
+            if injected := await self._inject_file_content(segments, "", conn):
+                parts.append(self._short(injected))
+        except Exception:
+            pass
+        if nested_id := _extract_forward(segments):
+            nested_text, nested_imgs = await self._resolve_forward_message(nested_id, conn, depth=depth + 1, _seen=seen, _fetch_count=fetch_count)
+            if nested_text:
+                parts.append(nested_text)
+            self._take_forward_images(fwd_images, nested_imgs)
+        return [p for p in parts if p]
     async def _resolve_forward_message(self, forward_id: str, conn, *, depth: int = 0,
                                         _seen: Optional[set] = None,
                                         _fetch_count: List[int] = None) -> Tuple[str, List[str]]:
-        if _seen is None:
-            _seen = set()
-        if _fetch_count is None:
-            _fetch_count = [0]
+        _seen = _seen or set()
+        _fetch_count = _fetch_count or [0]
         if forward_id in _seen or depth > self._FORWARD_MAX_DEPTH:
             return "", []
         _seen.add(forward_id)
         _fetch_count[0] += 1
         if _fetch_count[0] > self._FORWARD_MAX_FETCHES:
             return "", []
-        fwd_lines: List[str] = []
-        fwd_images: List[str] = []
         try:
             forward_msgs = await self.get_forward_msg(forward_id, conn=conn)
-        except Exception as e:
+        except Exception:
             return "", []
-        if not forward_msgs:
-            return "", []
-        for fmsg in forward_msgs:
-            f_name = (fmsg.get("sender", {}).get("nickname")
-                      or fmsg.get("sender", {}).get("card") or "未知")
-            raw_content = fmsg.get("content") or fmsg.get("message") or ""
-            f_segments = _extract_segments(raw_content)
-            f_text = _extract_text_from_message(raw_content)
-            f_images = _extract_images(f_segments)
-            nested_forward_id = _extract_forward(f_segments)
-            json_card = _extract_json_card(f_segments)
-            xml_msg = _extract_xml(f_segments)
-            typed = _extract_typed_segments(f_segments)
-            line_parts = []
-            if f_text:
-                line_parts.append(f_text)
-            if f_images and len(fwd_images) < self._FORWARD_MAX_IMAGES:
-                fwd_images.extend(f_images[:self._FORWARD_MAX_IMAGES - len(fwd_images)])
-                line_parts.append("[图片]")
-            for _seg_text in (json_card, xml_msg, *typed.values()):
-                if _seg_text:
-                    line_parts.append(_seg_text)
-            try:
-                injected = await self._inject_file_content(f_segments, "", conn)
-                if injected:
-                    line_parts.append(injected[:MAX_QUOTE_TEXT] + "…" if len(injected) > MAX_QUOTE_TEXT else injected)
-            except Exception:
-                pass
-            if nested_forward_id:
-                nested_text, nested_imgs = await self._resolve_forward_message(
-                    nested_forward_id, conn, depth=depth + 1, _seen=_seen, _fetch_count=_fetch_count)
-                if nested_text:
-                    line_parts.append(nested_text)
-                if nested_imgs and len(fwd_images) < self._FORWARD_MAX_IMAGES:
-                    fwd_images.extend(nested_imgs[:self._FORWARD_MAX_IMAGES - len(fwd_images)])
-            if line_parts:
-                fwd_lines.append(f"{'  ' * depth}{f_name}: {' '.join(line_parts)}")
-        text_block = ""
-        if fwd_lines:
-            text_block = "\n[合并转发消息]\n" + "\n".join(fwd_lines) + "\n[转发结束]"
-        return text_block, fwd_images
+        fwd_lines, fwd_images = [], []
+        for fmsg in forward_msgs or []:
+            sender = fmsg.get("sender", {})
+            name = sender.get("nickname") or sender.get("card") or "未知"
+            raw = fmsg.get("content") or fmsg.get("message") or ""
+            parts = await self._forward_line_parts(_extract_segments(raw), raw, conn, fwd_images, depth, _seen, _fetch_count)
+            if parts:
+                fwd_lines.append(f"{'  ' * depth}{name}: {' '.join(parts)}")
+        return ("\n[合并转发消息]\n" + "\n".join(fwd_lines) + "\n[转发结束]", fwd_images) if fwd_lines else ("", fwd_images)
     def _reply_segment_fallback(self, segments: List[Dict]) -> str:
         for seg in segments or []:
             if seg.get("type") != "reply":
