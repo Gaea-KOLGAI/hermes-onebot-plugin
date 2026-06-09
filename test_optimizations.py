@@ -5,7 +5,7 @@ from pathlib import Path
 import adapter
 import onebot_platform.adapter as adapter_impl
 from adapter import _parse_single_account_env, _truthy, _csv_list, _apply_yaml_config, DATA_DIR, MEDIA_CACHE_DIR
-from adapter import _extract_text_from_message, _extract_segments, _MediaCache
+from adapter import _extract_text_from_message, _extract_segments, _MediaCache, OneBotAdapter
 from adapter import (
     _load_gateway_tool_progress_mode,
     _normalise_tool_progress_mode,
@@ -98,6 +98,27 @@ def test_cq_text_unescape_uses_single_segment_parser():
     raw = "hello&#44; [CQ:at,qq=123] world&#91;ok&#93;"
     assert _extract_segments(raw) == [{"type": "text", "data": {"text": "hello,"}}, {"type": "at", "data": {"qq": "123"}}, {"type": "text", "data": {"text": "world[ok]"}}]
     assert _extract_text_from_message(raw) == "hello,world[ok]"
+
+
+def test_group_upload_notice_is_passive_and_does_not_dispatch():
+    class PassiveUploadAdapter(OneBotAdapter):
+        def __init__(self):
+            super().__init__({"extra": {"allowed_users": ["12345"]}})
+            self.group_upload_calls = 0
+
+        async def _handle_group_upload_notice(self, data, conn):
+            self.group_upload_calls += 1
+            raise AssertionError("group_upload notice should not be actively dispatched")
+
+    bot = PassiveUploadAdapter()
+    data = {
+        "notice_type": "group_upload",
+        "group_id": 1103659691,
+        "user_id": 257155386,
+        "file": {"name": "Hermes.Studio-0.6.10-x64.exe", "size": 146393250},
+    }
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+    assert bot.group_upload_calls == 0
 
 
 def test_media_download_streams_and_removes_oversized_partial(tmp_path):
