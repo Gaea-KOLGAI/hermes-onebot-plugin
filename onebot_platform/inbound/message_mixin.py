@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import onebot_platform.adapter_runtime as _runtime
 globals().update({k: v for k, v in vars(_runtime).items() if not k.startswith('__')})
+from onebot_platform.inbound import files as _files
+from onebot_platform.inbound import context as _context
 
 class MessageMixin:
     async def _handle_message(self, data: dict, conn: Optional[_NapCatConnection] = None):
@@ -195,70 +197,8 @@ class MessageMixin:
                 return await self._media_cache.download(img_url, self._http_client, "image")
         results = await asyncio.gather(*[_download_one(u) for u in urls], return_exceptions=True)
         return [r for r in results if isinstance(r, str) and r]
-    async def _inject_file_content(self, segments: List[Dict], text: str, conn) -> str:
-        injected = text
-        for seg in segments:
-            if seg.get("type") != "file":
-                continue
-            data = seg.get("data") or {}
-            file_name = data.get("name") or data.get("file") or ""
-            ext = Path(file_name).suffix.lower() if file_name else ""
-            if ext not in _TEXT_EXTS:
-                continue
-            local_path = None
-            file_url = data.get("url") or data.get("file_url") or ""
-            if not file_url:
-                file_url = await self._resolve_file_url(data, conn)
-            # C3: Only allow files from media cache directory (allowlist approach)
-            cache_dir = str(self._media_cache._dir.resolve())
-            if file_url.startswith("file://"):
-                decoded = url_unquote(file_url[7:])
-                resolved = str(Path(decoded).resolve())
-                if resolved.startswith(cache_dir + os.sep) and os.path.isfile(resolved) and not os.path.islink(resolved):
-                    local_path = resolved
-            elif file_url.startswith(("http://", "https://")):
-                try:
-                    local_path = await self._media_cache.download(file_url, self._http_client, "file")
-                except Exception as e:
-                    logger.debug("File download failed: %s", e)
-                    continue
-            if not local_path or not os.path.isfile(local_path):
-                continue
-            # M7: File size limit
-            if os.path.getsize(local_path) > FILE_INJECTION_MAX_BYTES:
-                logger.debug("File too large for injection: %s", local_path)
-                continue
-            try:
-                with open(local_path, "r", errors="replace") as f:
-                    file_content = f.read(FILE_INJECTION_MAX_BYTES)
-                display_name = os.path.basename(local_path)
-                injection = f"[Content of {display_name}]:\n{file_content}"
-                injected = f"{injection}\n\n{injected}" if injected.strip() else injection
-            except Exception as e:
-                pass
-        return injected
-    async def _resolve_file_url(self, data: dict, conn) -> str:
-        file_id = data.get("file_id") or data.get("id") or data.get("file")
-        if not file_id:
-            return ""
-        params_list = [{"file_id": file_id}, {"file": file_id}, {"id": file_id}]
-        busid = data.get("busid") or data.get("bus_id")
-        if busid is not None:
-            params_list.insert(0, {"file_id": file_id, "busid": busid})
-        for params in params_list:
-            try:
-                result = await self._send_action_conn(conn, "get_file", params, timeout=10.0)
-            except Exception:
-                continue
-            if result.get("retcode") != 0:
-                continue
-            rdata = result.get("data") or {}
-            url = rdata.get("url") or rdata.get("file_url") or rdata.get("path") or rdata.get("file") or ""
-            if url:
-                if os.path.isabs(str(url)):
-                    return f"file://{url}"
-                return str(url)
-        return ""
+    _inject_file_content = _files.inject_file_content
+    _resolve_file_url = _files.resolve_file_url
     async def _build_and_dispatch_event(self, parsed: dict, display_text: str, text: str,
                                          chat_id: str, user_id: str, sender_name: str,
                                          message_id: str, msg_type: str, *,
@@ -301,117 +241,15 @@ class MessageMixin:
         if reply_id:
             event.reply_to_message_id = reply_id
         await self.handle_message(event)
-    _FORWARD_MAX_DEPTH = 3
-    _FORWARD_MAX_FETCHES = 8
-    _FORWARD_MAX_IMAGES = 10
-    @staticmethod
-    def _short(text: str, limit: int = MAX_QUOTE_TEXT) -> str:
-        return text[:limit] + "…" if len(text) > limit else text
-    def _take_forward_images(self, dst: List[str], src: List[str]) -> bool:
-        if not src or len(dst) >= self._FORWARD_MAX_IMAGES:
-            return False
-        dst.extend(src[:self._FORWARD_MAX_IMAGES - len(dst)])
-        return True
-    async def _forward_line_parts(self, segments: List[Dict], raw_content, conn, fwd_images: List[str], depth: int, seen: set, fetch_count: List[int]) -> List[str]:
-        parts = [_extract_text_from_message(raw_content)]
-        if self._take_forward_images(fwd_images, _extract_images(segments)):
-            parts.append("[图片]")
-        parts.extend(x for x in (_extract_json_card(segments), _extract_xml(segments), *_extract_typed_segments(segments).values()) if x)
-        try:
-            if injected := await self._inject_file_content(segments, "", conn):
-                parts.append(self._short(injected))
-        except Exception:
-            pass
-        if nested_id := _extract_forward(segments):
-            nested_text, nested_imgs = await self._resolve_forward_message(nested_id, conn, depth=depth + 1, _seen=seen, _fetch_count=fetch_count)
-            if nested_text:
-                parts.append(nested_text)
-            self._take_forward_images(fwd_images, nested_imgs)
-        return [p for p in parts if p]
-    async def _resolve_forward_message(self, forward_id: str, conn, *, depth: int = 0,
-                                        _seen: Optional[set] = None,
-                                        _fetch_count: List[int] = None) -> Tuple[str, List[str]]:
-        _seen = _seen or set()
-        _fetch_count = _fetch_count or [0]
-        if forward_id in _seen or depth > self._FORWARD_MAX_DEPTH:
-            return "", []
-        _seen.add(forward_id)
-        _fetch_count[0] += 1
-        if _fetch_count[0] > self._FORWARD_MAX_FETCHES:
-            return "", []
-        try:
-            forward_msgs = await self.get_forward_msg(forward_id, conn=conn)
-        except Exception:
-            return "", []
-        fwd_lines, fwd_images = [], []
-        for fmsg in forward_msgs or []:
-            sender = fmsg.get("sender", {})
-            name = sender.get("nickname") or sender.get("card") or "未知"
-            raw = fmsg.get("content") or fmsg.get("message") or ""
-            parts = await self._forward_line_parts(_extract_segments(raw), raw, conn, fwd_images, depth, _seen, _fetch_count)
-            if parts:
-                fwd_lines.append(f"{'  ' * depth}{name}: {' '.join(parts)}")
-        return ("\n[合并转发消息]\n" + "\n".join(fwd_lines) + "\n[转发结束]", fwd_images) if fwd_lines else ("", fwd_images)
-    def _reply_segment_fallback(self, segments: List[Dict]) -> str:
-        for seg in segments or []:
-            if seg.get("type") != "reply":
-                continue
-            data = seg.get("data") or {}
-            sender = data.get("qq") or data.get("user_id") or data.get("sender_id") or "?"
-            body = ""
-            for key in ("text", "content", "message", "summary"):
-                if data.get(key):
-                    body = str(data.get(key))
-                    break
-            body = body or "无法从NapCat取回原文"
-            return f"\n[引用 {sender}: {body[:MAX_QUOTE_TEXT]}]"
-        return ""
-    async def _append_reply_context(self, display_text: str, reply_id: str, conn, source_segments: Optional[List[Dict]] = None) -> tuple:
-        quoted_images: List[str] = []
-        _fallback = self._reply_segment_fallback(source_segments or []) or "\n[引用了一条消息，但无法获取内容]"
-        try:
-            quoted_obj = await asyncio.wait_for(self.get_msg(reply_id, conn=conn), timeout=10.0)
-            if not quoted_obj:
-                return (display_text or "") + _fallback, quoted_images
-            quoted_message = quoted_obj.get("message", "")
-            quoted_text = _extract_text_from_message(quoted_message)
-            quoted_name = (quoted_obj.get("sender", {}).get("nickname") or quoted_obj.get("real_id", "?"))
-            quoted_segments = _extract_segments(quoted_message)
-            quoted_images = _extract_images(quoted_segments)
-            quoted_forward_id = _extract_forward(quoted_segments)
-            quoted_json_card = _extract_json_card(quoted_segments)
-            quoted_typed = _extract_typed_segments(quoted_segments)
-            quote_parts = []
-            if quoted_text:
-                quote_parts.append(quoted_text[:MAX_MULTIMSG_PREVIEW] + "…" if len(quoted_text) > MAX_MULTIMSG_PREVIEW else quoted_text)
-            elif quoted_images:
-                quote_parts.append("[图片]")
-            for _seg_text in quoted_typed.values():
-                if _seg_text:
-                    quote_parts.append(_seg_text)
-            quoted_file_text = await self._inject_file_content(quoted_segments, "", conn)
-            if quoted_file_text:
-                quote_parts.append(quoted_file_text[:MAX_QUOTE_TEXT] + "…" if len(quoted_file_text) > MAX_QUOTE_TEXT else quoted_file_text)
-            if quoted_forward_id:
-                try:
-                    fwd_text, fwd_imgs = await self._resolve_forward_message(quoted_forward_id, conn)
-                    if fwd_text:
-                        quote_parts.append(fwd_text)
-                    if fwd_imgs:
-                        quoted_images.extend(fwd_imgs)
-                except Exception:
-                    pass
-            elif quoted_json_card:
-                quote_parts.append(quoted_json_card)
-            if quote_parts:
-                combined = " ".join(quote_parts)
-                combined = combined[:MAX_QUOTE_TEXT] + "…" if len(combined) > MAX_QUOTE_TEXT else combined
-                display_text = (display_text or "") + f"\n[引用 {quoted_name}: {combined}]"
-            else:
-                display_text = (display_text or "") + _fallback
-        except Exception:
-            display_text = (display_text or "") + _fallback
-        return display_text, quoted_images
+    _FORWARD_MAX_DEPTH = _context.FORWARD_MAX_DEPTH
+    _FORWARD_MAX_FETCHES = _context.FORWARD_MAX_FETCHES
+    _FORWARD_MAX_IMAGES = _context.FORWARD_MAX_IMAGES
+    _short = staticmethod(_context.short)
+    _take_forward_images = _context.take_forward_images
+    _forward_line_parts = _context.forward_line_parts
+    _resolve_forward_message = _context.resolve_forward_message
+    _reply_segment_fallback = staticmethod(_context.reply_segment_fallback)
+    _append_reply_context = _context.append_reply_context
     async def _try_action_formats(self, action: str, params_list: List[dict], conn=None) -> dict:
         for params in params_list:
             if conn is not None:

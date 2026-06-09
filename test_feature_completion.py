@@ -2,7 +2,10 @@ import asyncio
 from types import SimpleNamespace
 
 from adapter import OneBotAdapter
+from onebot_platform.inbound import context as inbound_context
+from onebot_platform.inbound import files as inbound_files
 from onebot_platform.parsing.segments import _extract_typed_segments
+from onebot_platform.transport import lifecycle as transport_lifecycle
 
 
 class _InfoBot(OneBotAdapter):
@@ -47,6 +50,35 @@ def test_node_segment_extracts_sender_and_content_preview():
         {"type": "node", "data": {"name": "小明", "uin": "10001", "content": [{"type": "text", "data": {"text": "节点内容"}}]}}
     ])
     assert parsed["node_msg"] == "[转发节点: 小明(10001): 节点内容]"
+
+
+def test_extracted_inbound_and_transport_helpers_keep_mixin_compatibility():
+    assert OneBotAdapter._inject_file_content is inbound_files.inject_file_content
+    assert OneBotAdapter._resolve_file_url is inbound_files.resolve_file_url
+    assert OneBotAdapter._resolve_forward_message is inbound_context.resolve_forward_message
+    assert OneBotAdapter._append_reply_context is inbound_context.append_reply_context
+    assert OneBotAdapter._disconnect_conn is transport_lifecycle.disconnect_conn
+    assert OneBotAdapter._force_close_ws is transport_lifecycle.force_close_ws
+
+
+def test_forward_context_honors_instance_limit_overrides():
+    class Bot(_InfoBot):
+        _FORWARD_MAX_IMAGES = 1
+
+    bot = Bot()
+    dst = []
+    assert bot._take_forward_images(dst, ["a", "b"]) is True
+    assert dst == ["a"]
+    assert bot._take_forward_images(dst, ["c"]) is False
+    bot._FORWARD_MAX_DEPTH = -1
+    text, images = asyncio.run(bot._resolve_forward_message("x", bot._default_conn))
+    assert text == ""
+    assert images == []
+    bot._FORWARD_MAX_DEPTH = 3
+    bot._FORWARD_MAX_FETCHES = 0
+    text, images = asyncio.run(bot._resolve_forward_message("x", bot._default_conn))
+    assert text == ""
+    assert images == []
 
 
 def test_send_forward_message_accepts_natural_node_fields():
