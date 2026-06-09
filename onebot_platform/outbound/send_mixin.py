@@ -135,26 +135,14 @@ class SendMixin:
         msg_kind, target_id = _parse_chat_id(chat_id)
         action, params = self._send_msg_params(msg_kind, target_id, segments)
         return await self._send_action_conn(conn, action, params, timeout=timeout)
-    def _media_extension(self, path: str) -> str:
-        return _media.media_extension(self, path)
-    def _classify_media_path(self, path: str, *, force_voice: bool = False, as_document: bool = False) -> str:
-        return _media.classify_media_path(self, path, force_voice=force_voice, as_document=as_document)
-    def _outbound_media_key(self, chat_id: str, seg_type: str, file_val: str) -> tuple:
-        return _media.outbound_media_key(self, chat_id, seg_type, file_val)
-    def _prune_recent_outbound_media(self, ttl: float = 20.0) -> dict:
-        return _media.prune_recent_outbound_media(self, ttl)
-    def _is_recent_outbound_media(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
-        return _media.is_recent_outbound_media(self, chat_id, seg_type, file_val, ttl)
-    def _mark_outbound_media_once(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
-        return _media.mark_outbound_media_once(self, chat_id, seg_type, file_val, ttl)
-    def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
-        return _media.as_onebot_file_value(self, path_or_url, require_safe_local=require_safe_local)
-    async def _send_media_path(
-        self, chat_id: str, media_path: str, *, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-        force_voice: bool = False, as_document: bool = False,
-    ) -> SendResult:
-        return await _media.send_media_path(self, chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata, force_voice=force_voice, as_document=as_document)
+    _media_extension = _media.media_extension
+    _classify_media_path = _media.classify_media_path
+    _outbound_media_key = _media.outbound_media_key
+    _prune_recent_outbound_media = _media.prune_recent_outbound_media
+    _is_recent_outbound_media = _media.is_recent_outbound_media
+    _mark_outbound_media_once = _media.mark_outbound_media_once
+    _as_onebot_file_value = _media.as_onebot_file_value
+    _send_media_path = _media.send_media_path
     async def send(
         self,
         chat_id: str,
@@ -283,14 +271,10 @@ class SendMixin:
         if raw_path.startswith(("http://", "https://")):
             return await self.send(chat_id, f"文件链接: {raw_path}", reply_to=reply_to, metadata=metadata)
         return sr
-    def _notice_sender_name(self, data: dict) -> str:
-        return _notices.notice_sender_name(self, data)
-    async def _dispatch_notice_text(self, data: dict, conn: _NapCatConnection, text: str, *, media_url: str = "", media_type: str = "") -> None:
-        await _notices.dispatch_notice_text(self, data, conn, text, media_url=media_url, media_type=media_type)
-    async def _handle_group_upload_notice(self, data: dict, conn: _NapCatConnection) -> None:
-        await _notices.handle_group_upload_notice(self, data, conn)
-    async def _handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
-        await _notices.handle_notice(self, data, conn)
+    _notice_sender_name = _notices.notice_sender_name
+    _dispatch_notice_text = _notices.dispatch_notice_text
+    _handle_group_upload_notice = _notices.handle_group_upload_notice
+    _handle_notice = _notices.handle_notice
     async def _handle_request(self, data: dict, conn: _NapCatConnection) -> None:
         return
     async def set_input_status(self, chat_id: str, event_type: int = 1) -> SendResult:
@@ -361,16 +345,10 @@ class SendMixin:
             return False
         status = await self._delete_message_with_status(chat_id, message_id, timeout=timeout)
         return status is True
-    def _fire_and_forget_delete(self, chat_id: str, message_id: str) -> None:
-        _deletion.fire_and_forget_delete(self, chat_id, message_id)
-    async def _bg_delete(self, chat_id: str, message_id: str) -> None:
-        await _deletion.bg_delete(self, chat_id, message_id)
-    async def _delete_message_with_status(self, chat_id: str, message_id: str, timeout: float = 15.0) -> Optional[bool]:
-        return await _deletion.delete_message_with_status(self, chat_id, message_id, timeout)
-    async def _send_media(self, chat_id: str, seg_type: str, file_val: str,
-                          caption: str = None, reply_to: str = None, timeout: float = 30.0,
-                          metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        return await _media.send_media(self, chat_id, seg_type, file_val, caption, reply_to, timeout=timeout, metadata=metadata)
+    _fire_and_forget_delete = _deletion.fire_and_forget_delete
+    _bg_delete = _deletion.bg_delete
+    _delete_message_with_status = _deletion.delete_message_with_status
+    _send_media = _media.send_media
     async def send_forward_message(
         self, chat_id: str, messages: List[Dict[str, Any]],
         conn: Optional[_NapCatConnection] = None,
