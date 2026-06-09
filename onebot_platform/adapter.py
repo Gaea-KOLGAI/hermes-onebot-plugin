@@ -364,7 +364,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
             except (ValueError, TypeError):
                 return {"id": chat_id, "name": name, "type": chat_type}
         conn = self._get_conn_for_chat(chat_id)
-        if conn.is_connected:
+        if conn.is_connected or conn.http_api_url:
             try:
                 resp = await self._send_action_conn(conn, action, params, timeout=5.0)
                 rdata = resp.get("data") or {}

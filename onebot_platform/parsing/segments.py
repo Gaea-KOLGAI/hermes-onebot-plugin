@@ -248,6 +248,46 @@ def _fmt_rps(data):
     return f"[猜拳: {rps_map.get(rid, rid)}]"
 
 
+def _stringify_segment_content(value: Any) -> str:
+    if isinstance(value, str):
+        return _cq_unescape(value)
+    if isinstance(value, list):
+        return _segments_text(_extract_segments(value))
+    if isinstance(value, dict):
+        for key in ("text", "content", "data", "title", "desc", "summary"):
+            nested = value.get(key)
+            if nested:
+                rendered = _stringify_segment_content(nested)
+                if rendered:
+                    return rendered
+        values = _json_card_values(value, limit=4)
+        if values:
+            return " ".join(values)
+    return ""
+
+
+def _fmt_markdown(data):
+    raw = data.get("content") or data.get("data") or data.get("text") or ""
+    text = strip_markdown(_stringify_segment_content(raw))
+    if not text:
+        return "[Markdown消息]"
+    if len(text) > MAX_MULTIMSG_PREVIEW:
+        text = text[:MAX_MULTIMSG_PREVIEW] + "…"
+    return f"[Markdown消息]\n{text}"
+
+
+def _fmt_node(data):
+    name = str(data.get("name") or data.get("nickname") or data.get("sender_name") or "匿名").strip() or "匿名"
+    uid = str(data.get("uin") or data.get("user_id") or data.get("sender_id") or "").strip()
+    content = _stringify_segment_content(data.get("content") or data.get("message") or "")
+    prefix = f"{name}({uid})" if uid else name
+    if content:
+        if len(content) > MAX_TITLE_PREVIEW:
+            content = content[:MAX_TITLE_PREVIEW] + "…"
+        return f"[转发节点: {prefix}: {content}]"
+    return f"[转发节点: {prefix}]"
+
+
 _SEGMENT_FORMATTERS: Dict[str, Callable] = {
     "file": lambda d: (
         f"[文件: {d.get('name') or d.get('file') or '未知文件'} {d.get('url') or d.get('file_url') or ''}]"
@@ -282,8 +322,8 @@ _SEGMENT_FORMATTERS: Dict[str, Callable] = {
     "basketball": lambda d: f"[篮球: {d.get('id', d.get('result', ''))}]",
     "poke": lambda d: f"[戳一戳: {d.get('qq') or d.get('target_id') or ''}]",
     "anonymous": lambda d: f"[匿名: {d.get('name') or d.get('id') or ''}]",
-    "markdown": lambda d: f"[Markdown消息: {(d.get('content') or d.get('data') or '')[:MAX_TITLE_PREVIEW]}]",
-    "node": lambda d: "[转发节点]",
+    "markdown": _fmt_markdown,
+    "node": _fmt_node,
 }
 
 _SEGMENT_KEY_MAP = {

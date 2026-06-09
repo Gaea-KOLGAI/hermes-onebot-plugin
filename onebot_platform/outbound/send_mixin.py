@@ -584,11 +584,11 @@ class SendMixin:
             return tid
         nodes = []
         for msg in messages:
-            content = msg.get("content", "")
+            content = msg.get("segments") if "segments" in msg else msg.get("content", "")
             segs = content if isinstance(content, list) else [{"type": "text", "data": {"text": str(content)}}]
-            sid = msg.get("sender_id", "10000")
+            sid = msg.get("sender_id") or msg.get("user_id") or msg.get("uin") or "10000"
             nodes.append({"type": "node", "data": {
-                "nickname": msg.get("sender_name", "匿名"),
+                "nickname": msg.get("sender_name") or msg.get("name") or msg.get("nickname") or "匿名",
                 "user_id": int(sid) if str(sid).isdigit() else 10000,
                 "content": segs,
             }})
