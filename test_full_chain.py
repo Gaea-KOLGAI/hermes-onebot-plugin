@@ -914,7 +914,8 @@ except Exception as e:
     fail("send_document 出站路径限制", str(e))
 
 try:
-    dispatch_src = textwrap.dedent(inspect.getsource(SendMixin._send_media_path))
+    from onebot_platform.outbound import media as outbound_media
+    dispatch_src = textwrap.dedent(inspect.getsource(outbound_media.send_media_path))
     assert "senders =" in dispatch_src
     assert ast.dump(ast.parse(dispatch_src)).count("If(") <= 1
     ok("媒体发送路径使用表驱动分发")

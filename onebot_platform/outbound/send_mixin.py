@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import onebot_platform.adapter_runtime as _runtime
 globals().update({k: v for k, v in vars(_runtime).items() if not k.startswith('__')})
+from onebot_platform.outbound import deletion as _deletion
+from onebot_platform.outbound import media as _media
+from onebot_platform.outbound import notices as _notices
 
 class SendMixin:
     @staticmethod
@@ -133,97 +136,25 @@ class SendMixin:
         action, params = self._send_msg_params(msg_kind, target_id, segments)
         return await self._send_action_conn(conn, action, params, timeout=timeout)
     def _media_extension(self, path: str) -> str:
-        parsed_path = urlparse(path).path if "://" in str(path) else str(path)
-        return os.path.splitext(parsed_path)[1].lower()
+        return _media.media_extension(self, path)
     def _classify_media_path(self, path: str, *, force_voice: bool = False, as_document: bool = False) -> str:
-        if as_document:
-            return "document"
-        mime, _ = mimetypes.guess_type(path)
-        ext = self._media_extension(path)
-        if force_voice:
-            return "voice"
-        for kind, exts in _MEDIA_KIND_EXTS.items():
-            if ext in exts or (mime and mime.startswith(f"{kind}/")):
-                return kind
-        return "document"
+        return _media.classify_media_path(self, path, force_voice=force_voice, as_document=as_document)
     def _outbound_media_key(self, chat_id: str, seg_type: str, file_val: str) -> tuple:
-        raw = str(file_val or "").strip()
-        if raw.startswith("file://"):
-            try:
-                raw = str(Path(url_unquote(urlparse(raw).path)).resolve())
-            except Exception:
-                pass
-        elif not raw.startswith(("http://", "https://")):
-            try:
-                raw = str(Path(os.path.expanduser(raw)).resolve())
-            except Exception:
-                pass
-        return (str(chat_id), str(seg_type), raw)
+        return _media.outbound_media_key(self, chat_id, seg_type, file_val)
     def _prune_recent_outbound_media(self, ttl: float = 20.0) -> dict:
-        now = time.monotonic()
-        recent = getattr(self, "_recent_outbound_media", None)
-        if recent is None:
-            recent = {}
-            self._recent_outbound_media = recent
-        cutoff = now - ttl
-        for key, ts in list(recent.items()):
-            if ts < cutoff:
-                recent.pop(key, None)
-        return recent
+        return _media.prune_recent_outbound_media(self, ttl)
     def _is_recent_outbound_media(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
-        recent = self._prune_recent_outbound_media(ttl)
-        key = self._outbound_media_key(chat_id, seg_type, file_val)
-        if key in recent:
-            logger.debug("Skipping duplicate outbound media send for %s", key)
-            return True
-        return False
+        return _media.is_recent_outbound_media(self, chat_id, seg_type, file_val, ttl)
     def _mark_outbound_media_once(self, chat_id: str, seg_type: str, file_val: str, ttl: float = 20.0) -> bool:
-        recent = self._prune_recent_outbound_media(ttl)
-        key = self._outbound_media_key(chat_id, seg_type, file_val)
-        if key in recent:
-            logger.debug("Skipping duplicate outbound media send for %s", key)
-            return False
-        recent[key] = time.monotonic()
-        return True
+        return _media.mark_outbound_media_once(self, chat_id, seg_type, file_val, ttl)
     def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
-        raw = str(path_or_url).strip()
-        if not raw:
-            raise ValueError("empty outbound file path")
-        if raw.startswith(("http://", "https://")):
-            return raw
-        if raw.startswith("file://"):
-            if require_safe_local and not _is_safe_outbound_local_path(raw):
-                raise ValueError("local file path is outside allowed outbound media roots")
-            staged = self._media_cache.prepare_outbound_local_file(raw) if require_safe_local else None
-            return Path(staged).resolve().as_uri() if staged else raw
-        if require_safe_local and not _is_safe_outbound_local_path(raw):
-            raise ValueError("local file path is outside allowed outbound media roots")
-        if require_safe_local:
-            staged = self._media_cache.prepare_outbound_local_file(raw)
-            if staged:
-                raw = staged
-        p = Path(os.path.expanduser(raw)).resolve()
-        if require_safe_local and not _is_safe_outbound_local_path(p):
-            raise ValueError("local file path is outside allowed outbound media roots")
-        try:
-            return p.as_uri()
-        except ValueError:
-            return "file://" + url_quote(str(p))
+        return _media.as_onebot_file_value(self, path_or_url, require_safe_local=require_safe_local)
     async def _send_media_path(
         self, chat_id: str, media_path: str, *, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
         force_voice: bool = False, as_document: bool = False,
     ) -> SendResult:
-        kind = self._classify_media_path(media_path, force_voice=force_voice, as_document=as_document)
-        senders = {
-            "voice": self.send_voice,
-            "video": self.send_video,
-            "image": self.send_image,
-            "document": self.send_document,
-        }
-        return await senders.get(kind, self.send_document)(
-            chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata
-        )
+        return await _media.send_media_path(self, chat_id, media_path, caption=caption, reply_to=reply_to, metadata=metadata, force_voice=force_voice, as_document=as_document)
     async def send(
         self,
         chat_id: str,
@@ -353,81 +284,13 @@ class SendMixin:
             return await self.send(chat_id, f"文件链接: {raw_path}", reply_to=reply_to, metadata=metadata)
         return sr
     def _notice_sender_name(self, data: dict) -> str:
-        return str(data.get("nickname") or data.get("card") or data.get("user_id") or "system")
+        return _notices.notice_sender_name(self, data)
     async def _dispatch_notice_text(self, data: dict, conn: _NapCatConnection, text: str, *, media_url: str = "", media_type: str = "") -> None:
-        msg_type = "group" if data.get("group_id") else "private"
-        user_id = str(data.get("user_id") or data.get("operator_id") or "")
-        if user_id and not await self._check_authorization_async(user_id, msg_type, {"message_type": msg_type, **data}, conn):
-            return
-        chat_id = f"group_{data.get('group_id')}" if msg_type == "group" else f"private_{user_id}"
-        if self._multi_account:
-            chat_id = f"{conn.name}:{chat_id}"
-        source = self.build_source(
-            chat_id=chat_id,
-            user_id=user_id or str(data.get("self_id") or "system"),
-            user_name=self._notice_sender_name(data),
-            message_id=str(data.get("message_id") or data.get("file", {}).get("id") or data.get("flag") or ""),
-            chat_type="group" if msg_type == "group" else "dm",
-        )
-        event = MessageEvent(source=source, text=text, message_type=MessageType.TEXT, raw_message=data, message_id=source.message_id)
-        if media_url:
-            event.media_urls = [media_url]
-            event.media_types = [media_type or "file"]
-        await self.handle_message(event)
+        await _notices.dispatch_notice_text(self, data, conn, text, media_url=media_url, media_type=media_type)
     async def _handle_group_upload_notice(self, data: dict, conn: _NapCatConnection) -> None:
-        file_info = data.get("file") or {}
-        name = file_info.get("name") or file_info.get("file") or "未知文件"
-        size = file_info.get("size")
-        file_url = file_info.get("url") or file_info.get("file_url") or ""
-        if not file_url:
-            file_url = await self._resolve_file_url(file_info, conn)
-        seg = {"type": "file", "data": {**file_info, "name": name}}
-        if file_url:
-            seg["data"]["url"] = file_url
-        injected = await self._inject_file_content([seg], "", conn)
-        text = f"[群文件上传: {name}"
-        if size:
-            text += f" size={size}"
-        text += "]"
-        if injected:
-            text += "\n" + injected
-        await self._dispatch_notice_text(data, conn, text, media_url=file_url, media_type="file")
+        await _notices.handle_group_upload_notice(self, data, conn)
     async def _handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
-        notice_type = data.get("notice_type", "")
-        sub_type = data.get("sub_type", "")
-        if notice_type == "group_upload":
-            # Group file-upload notices are passive context only. Do not turn
-            # them into MessageEvent objects, otherwise every uploaded group
-            # file actively wakes Hermes and produces an unsolicited reply.
-            return
-        if notice_type in {"group_recall", "friend_recall", "group_increase", "group_decrease", "group_ban"}:
-            return
-        if notice_type == "notify" and sub_type == "poke":
-            poker_id = str(data.get("user_id", ""))
-            target_id = data.get("target_id", "")
-            self_id = data.get("self_id", "")
-            if str(target_id) != str(self_id):
-                return
-            if _HAS_APPROVAL:
-                # A poke approval should resolve the pending approval in the
-                # chat where the approval prompt was sent.  Group poke notices
-                # include group_id, but older code only checked private_<user>,
-                # so group approvals could never be accepted by poking.
-                candidate_chat_ids = []
-                if data.get("group_id"):
-                    candidate_chat_ids.append(f"group_{data.get('group_id')}")
-                candidate_chat_ids.append(f"private_{poker_id}")
-                if self._multi_account:
-                    candidate_chat_ids = [f"{conn.name}:{cid}" for cid in candidate_chat_ids] + candidate_chat_ids
-                admin_qq = os.getenv("ONEBOT_ADMIN_QQ") or conn.admin_qq or (conn.allowed_users[0] if conn.allowed_users else None)
-                for chat_id in candidate_chat_ids:
-                    is_admin_approval = self._pending_approval_admin.get(chat_id, False)
-                    if is_admin_approval and (not admin_qq or str(poker_id) != str(admin_qq)):
-                        continue
-                    if chat_id in self._pending_approvals:
-                        await self._resolve_approval_shortcut(chat_id, "1", poker_id, admin_qq)
-                        return
-            await self._dispatch_notice_text(data, conn, f"[戳一戳: {poker_id}]")
+        await _notices.handle_notice(self, data, conn)
     async def _handle_request(self, data: dict, conn: _NapCatConnection) -> None:
         return
     async def set_input_status(self, chat_id: str, event_type: int = 1) -> SendResult:
@@ -499,79 +362,15 @@ class SendMixin:
         status = await self._delete_message_with_status(chat_id, message_id, timeout=timeout)
         return status is True
     def _fire_and_forget_delete(self, chat_id: str, message_id: str) -> None:
-        if not self._delete_msg_supported:
-            return
-        try:
-            task = asyncio.ensure_future(self._bg_delete(chat_id, message_id))
-            self._bg_delete_tasks.add(task)
-            task.add_done_callback(self._bg_delete_tasks.discard)
-        except Exception:
-            pass
+        _deletion.fire_and_forget_delete(self, chat_id, message_id)
     async def _bg_delete(self, chat_id: str, message_id: str) -> None:
-        try:
-            status = await self._delete_message_with_status(chat_id, message_id, timeout=3.0)
-            if status is None:
-                self._delete_msg_supported = False
-        except Exception:
-            pass
+        await _deletion.bg_delete(self, chat_id, message_id)
     async def _delete_message_with_status(self, chat_id: str, message_id: str, timeout: float = 15.0) -> Optional[bool]:
-        conn = self._get_conn_for_chat(chat_id)
-        try:
-            mid = _safe_int(message_id, "message_id")
-        except ValueError:
-            return False
-        try:
-            result = await self._send_action_conn(conn, "delete_msg", {"message_id": mid}, timeout=timeout)
-            retcode = result.get("retcode")
-            if retcode in (0, 200):
-                return True
-            if retcode == -1:
-                return None
-            return False
-        except Exception:
-            return None
+        return await _deletion.delete_message_with_status(self, chat_id, message_id, timeout)
     async def _send_media(self, chat_id: str, seg_type: str, file_val: str,
                           caption: str = None, reply_to: str = None, timeout: float = 30.0,
                           metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        if self._is_recent_outbound_media(chat_id, seg_type, file_val):
-            return SendResult(success=True)
-        conn = self._get_conn_for_chat(chat_id)
-        msg_kind, target_id = _parse_chat_id(chat_id)
-        segments = self._with_metadata_mention(chat_id, metadata, {"type": seg_type, "data": {"file": file_val}})
-        if caption:
-            segments.append({"type": "text", "data": {"text": caption}})
-        message = self._message_with_optional_reply(chat_id, reply_to, *segments)
-        ws = conn.ws
-        ws_is_ready = ws is not None and getattr(ws, "close_code", None) is None
-        if conn.http_api_url and not ws_is_ready:
-            try:
-                tid = _safe_target_id(target_id)
-                if isinstance(tid, SendResult):
-                    return tid
-                action = f"send_{msg_kind}_msg"
-                params = {_onebot_target_key(msg_kind): tid, "message": message}
-                result = await self._http_call_conn(conn, action, params)
-                retcode = result.get("retcode", -1)
-                if retcode in (0, 200):
-                    data = result.get("data") or {}
-                    if self._mark_outbound_media_once(chat_id, seg_type, file_val):
-                        return SendResult(success=True, message_id=str(data.get("message_id", "")))
-                    return SendResult(success=True)
-            except Exception as e:
-                logger.debug("HTTP fallback for media send failed: %s", e)
-        action, params = self._send_msg_params(msg_kind, target_id, message)
-        result = await self._send_action_conn(conn, action, params, timeout=timeout)
-        retcode = result.get("retcode")
-        if retcode in (0, 200):
-            if self._mark_outbound_media_once(chat_id, seg_type, file_val):
-                data = result.get("data") or {}
-                return SendResult(success=True, message_id=str(data.get("message_id", "")))
-            return SendResult(success=True)
-        if retcode == -1:
-            msg = result.get("msg", "")
-            if "timeout" in msg.lower():
-                return SendResult(success=False, error="send timeout; delivery not confirmed", retryable=True)
-        return _result_to_send_result(result, f"send_{seg_type}", extract_msg_id=True)
+        return await _media.send_media(self, chat_id, seg_type, file_val, caption, reply_to, timeout=timeout, metadata=metadata)
     async def send_forward_message(
         self, chat_id: str, messages: List[Dict[str, Any]],
         conn: Optional[_NapCatConnection] = None,
