@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 class DedupCache:
     def __init__(self, ttl: float, max_size: int):
-        self._ttl = ttl
-        self._max_size = max_size
+        self._ttl = max(0.0, float(ttl))
+        self._max_size = max(1, int(max_size or 1))
         self._cache: OrderedDict = OrderedDict()
 
     def is_duplicate(self, dedup_key: str) -> bool:
@@ -77,6 +77,8 @@ class MemberCache:
         if entry and time.time() - entry["_ts"] < self._ttl:
             self._cache.move_to_end(key)
             return entry
+        if entry:
+            self._cache.pop(key, None)
         return None
 
     def set(self, group_id: str, user_id: str, info: Dict):
@@ -220,6 +222,9 @@ class _MediaCache:
                         tmp.write(chunk)
             if tmp_path is None:
                 return None
+            if total <= 0:
+                tmp_path.unlink(missing_ok=True)
+                return None
             tmp_path.replace(filepath)
             await asyncio.to_thread(self._cleanup_subdir, cache_subdir)
             return str(filepath)
@@ -238,7 +243,8 @@ class _MediaCache:
                 key=lambda path: os.path.getmtime(path),
             )
             if len(all_files) > self._max_files:
-                for old_file in all_files[:100]:
+                overflow = len(all_files) - self._max_files
+                for old_file in all_files[:overflow]:
                     old_file.unlink(missing_ok=True)
         except OSError:
             pass

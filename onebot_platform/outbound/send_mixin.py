@@ -51,6 +51,8 @@ class SendMixin:
         except Exception as e:
             self._cleanup_echo(conn, echo)
             return {"status": "failed", "retcode": -1, "msg": str(e)}
+        finally:
+            self._cleanup_echo(conn, echo)
     async def _send_reply_async_conn(self, conn: _NapCatConnection, data: dict, text: str):
         msg_type = data.get("message_type", "")
         msg_kind = "group" if msg_type == "group" else "private"
@@ -172,6 +174,8 @@ class SendMixin:
         return True
     def _as_onebot_file_value(self, path_or_url: str, *, require_safe_local: bool = True) -> str:
         raw = str(path_or_url).strip()
+        if not raw:
+            raise ValueError("empty outbound file path")
         if raw.startswith(("http://", "https://")):
             return raw
         if require_safe_local:
@@ -421,11 +425,13 @@ class SendMixin:
             "user_id": tid,
             "event_type": event_type,
         })
-        if event_type:
-            self._active_input_status[chat_id] = True
-        else:
-            self._active_input_status.pop(chat_id, None)
-        return _result_to_send_result(result, "set_input_status")
+        sr = _result_to_send_result(result, "set_input_status")
+        if sr.success:
+            if event_type:
+                self._active_input_status[chat_id] = True
+            else:
+                self._active_input_status.pop(chat_id, None)
+        return sr
     async def clear_input_status(self, chat_id: str) -> None:
         if self._active_input_status.get(chat_id):
             await self.set_input_status(chat_id, event_type=0)

@@ -14,6 +14,8 @@ from gateway.platforms.base import SendResult
 
 
 def _safe_int(val, label: str = "") -> int:
+    if isinstance(val, bool):
+        raise ValueError(f"Invalid {label or 'value'}: {val!r}")
     try:
         return int(val)
     except (ValueError, TypeError):
@@ -28,9 +30,10 @@ def _safe_target_id(target_id) -> "int | SendResult":
 
 
 def _result_to_send_result(result: dict, action_name: str, extract_msg_id: bool = False) -> SendResult:
-    if result.get("retcode") == 0:
+    if result.get("retcode") in (0, 200):
         if extract_msg_id:
-            msg_id = str(result.get("data", {}).get("message_id", ""))
+            data = result.get("data") or {}
+            msg_id = str(data.get("message_id") or data.get("file_id") or data.get("forward_id") or "")
             return SendResult(success=True, message_id=msg_id)
         return SendResult(success=True)
     err = result.get("msg") or result.get("wording") or f"{action_name} failed"
@@ -38,11 +41,12 @@ def _result_to_send_result(result: dict, action_name: str, extract_msg_id: bool 
 
 
 def _account_extra(extra: dict, chat_id: str, extract_account_from_chat_id: Callable[[str], str]) -> dict:
-    accounts = extra.get("accounts", [])
-    if isinstance(accounts, list) and accounts:
+    accounts = extra.get("accounts", []) if isinstance(extra, dict) else []
+    valid_accounts = [account for account in accounts if isinstance(account, dict)] if isinstance(accounts, list) else []
+    if valid_accounts:
         account_name = extract_account_from_chat_id(chat_id)
-        return next((account for account in accounts if account.get("name") == account_name), accounts[0]) or {}
-    return extra
+        return next((account for account in valid_accounts if account.get("name") == account_name), valid_accounts[0]) or {}
+    return extra if isinstance(extra, dict) else {}
 
 
 def _post_onebot_http(http_api_url: str, token: str, action: str, params: dict) -> dict:
@@ -61,7 +65,7 @@ def _post_onebot_http(http_api_url: str, token: str, action: str, params: dict) 
         return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
-    if result.get("retcode") == 0:
+    if result.get("retcode") in (0, 200):
         data = result.get("data") or {}
         return {"success": True, "message_id": str(data.get("message_id") or data.get("file_id") or "")}
     return {"success": False, "error": result.get("msg") or result.get("wording") or f"{action} failed"}
@@ -69,6 +73,8 @@ def _post_onebot_http(http_api_url: str, token: str, action: str, params: dict) 
 
 def _file_uri(path: str) -> str:
     raw = str(path or "").strip()
+    if not raw:
+        raise ValueError("empty standalone file path")
     if raw.startswith(("http://", "https://", "file://")):
         return raw
     return Path(raw).expanduser().resolve().as_uri()
@@ -101,6 +107,7 @@ async def _standalone_send(
     id_key = "group_id" if msg_kind == "group" else "user_id"
     send_action = f"send_{msg_kind}_msg"
     media_files = kwargs.get("media_files") or []
+    media_cache = media_cache_factory(media_cache_dir) if media_files else None
 
     if http_api_url:
         last_result = None
@@ -115,7 +122,7 @@ async def _standalone_send(
             if not last_result.get("success"):
                 return last_result
         for media_path, is_voice in media_files:
-            staged_path = media_cache_factory(media_cache_dir).prepare_outbound_local_file(media_path)
+            staged_path = media_cache.prepare_outbound_local_file(media_path) if media_cache else None
             if not staged_path or not os.path.exists(staged_path):
                 return {"success": False, "error": f"Media file not found or could not be staged: {media_path}"}
             seg_type = guess_media_segment_type(staged_path, is_voice=is_voice)
@@ -148,7 +155,7 @@ async def _standalone_send(
     if str(message).strip():
         segments.append({"type": "text", "data": {"text": message}})
     for media_path, is_voice in media_files:
-        staged_path = media_cache_factory(media_cache_dir).prepare_outbound_local_file(media_path)
+        staged_path = media_cache.prepare_outbound_local_file(media_path) if media_cache else None
         if not staged_path or not os.path.exists(staged_path):
             return {"success": False, "error": f"Media file not found or could not be staged: {media_path}"}
         file_uri = _file_uri(staged_path)
@@ -164,7 +171,16 @@ async def _standalone_send(
             for _ in range(5):
                 data = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
                 if data.get("echo") == echo:
-                    return {"success": data.get("retcode") == 0}
+                    ok = data.get("retcode") in (0, 200)
+                    result: dict[str, Any] = {"success": ok}
+                    if ok:
+                        payload_data = data.get("data") or {}
+                        message_id = payload_data.get("message_id") or payload_data.get("file_id") or payload_data.get("forward_id")
+                        if message_id:
+                            result["message_id"] = str(message_id)
+                    elif data.get("msg") or data.get("wording"):
+                        result["error"] = data.get("msg") or data.get("wording")
+                    return result
             return {"success": False, "error": "no matching echo response"}
     except Exception as e:
         return {"success": False, "error": str(e)}

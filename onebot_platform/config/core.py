@@ -65,6 +65,8 @@ def _save_gateway_tool_progress_mode(mode: str, platform_key: str = "onebot", *,
     user_config = {}
     if config_path.exists():
         user_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(user_config, dict):
+            user_config = {}
     display = user_config.setdefault("display", {})
     if not isinstance(display, dict):
         display = user_config["display"] = {}
@@ -163,6 +165,7 @@ def _guess_media_segment_type(path: str, *, media_kind_exts, is_voice: bool = Fa
 
 
 def _parse_single_account_env(extra: dict, *, csv_list=_csv_list, truthy=_truthy) -> dict:
+    extra = extra if isinstance(extra, dict) else {}
     def _csv_env(key: str, fallback_key: str) -> list:
         return csv_list(os.getenv(key)) or csv_list(extra.get(fallback_key))
 
@@ -180,24 +183,34 @@ def _parse_single_account_env(extra: dict, *, csv_list=_csv_list, truthy=_truthy
 
 
 def _configured_ws_urls(extra: dict) -> List[str]:
+    if not isinstance(extra, dict):
+        return []
     accounts = extra.get("accounts", [])
     if isinstance(accounts, list) and accounts:
-        return [acct.get("ws_url", "") for acct in accounts]
-    return [os.getenv("ONEBOT_WS_URL") or extra.get("ws_url", "")]
+        return [
+            str(acct.get("ws_url", "")).strip()
+            for acct in accounts
+            if isinstance(acct, dict) and str(acct.get("ws_url", "")).strip()
+        ]
+    url = str(os.getenv("ONEBOT_WS_URL") or extra.get("ws_url", "")).strip()
+    return [url] if url else []
 
 
 def _config_extra(config) -> dict:
     if isinstance(config, dict):
-        return config.get("extra", {}) or {}
-    return getattr(config, "extra", {}) or {}
+        extra = config.get("extra", {}) or {}
+    else:
+        extra = getattr(config, "extra", {}) or {}
+    return extra if isinstance(extra, dict) else {}
 
 
 def validate_config(config) -> bool:
-    return all(url and url.startswith(("ws://", "wss://")) for url in _configured_ws_urls(_config_extra(config)))
+    urls = _configured_ws_urls(_config_extra(config))
+    return bool(urls) and all(url.startswith(("ws://", "wss://")) for url in urls)
 
 
 def is_configured(config) -> bool:
-    return any(_configured_ws_urls(_config_extra(config)))
+    return bool(_configured_ws_urls(_config_extra(config)))
 
 
 def _env_enablement() -> Optional[dict]:

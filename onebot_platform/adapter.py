@@ -245,6 +245,7 @@ from onebot_platform.commands.mixin import CommandMixin
 from onebot_platform.outbound.send_mixin import SendMixin
 from onebot_platform.gateway_integration.approvals import ApprovalMixin, _APPROVAL_CHOICES, _UPDATE_CHOICES
 def _parse_single_account_env(extra: dict) -> dict:
+    extra = extra if isinstance(extra, dict) else {}
     def _csv_env(key: str, fallback_key: str) -> list:
         raw = os.getenv(key)
         return _csv_list(raw) if raw else _csv_list(extra.get(fallback_key, []))
