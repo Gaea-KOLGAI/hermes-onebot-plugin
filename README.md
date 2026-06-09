@@ -232,7 +232,7 @@ MEDIA:/tmp/example.png
 
 保留 `send_forward_message` 等实际使用的扩展发送方法。未使用且未实测的轻互动发送能力已移除，避免继续堆积维护成本。
 
-适配器已拆成兼容门面和功能模块，当前约 56 个 Python 文件。`outbound/send_mixin.py` 已进一步瘦身为出站兼容入口，媒体、notice、删除逻辑分别拆到 `outbound/media.py`、`outbound/notices.py`、`outbound/deletion.py`。更新后需至少通过 `py_compile`、`pytest` 回归测试和 `test_full_chain.py`。
+适配器已拆成兼容门面和功能模块，当前约 57 个 Python 文件。`adapter.py` 已压缩为轻量装配门面，`outbound/send_mixin.py` 已进一步瘦身为出站兼容入口；媒体、notice、删除逻辑分别拆到 `outbound/media.py`、`outbound/notices.py`、`outbound/deletion.py`。更新后需至少通过 `py_compile`、`pytest` 回归测试和 `test_full_chain.py`。
 
 ## 环境变量
 
