@@ -312,7 +312,7 @@ class SendMixin:
         action = "upload_group_file" if msg_kind == "group" else "upload_private_file"
         params = {_onebot_target_key(msg_kind): tid, "file": file_uri, "name": name}
         result = await self._send_action_conn(conn, action, params, timeout=60.0)
-        sr = _result_to_send_result(result, "send_document")
+        sr = _result_to_send_result(result, "send_document", extract_msg_id=True)
         if sr.success:
             return sr
         # Some OneBot implementations do not support upload_private_file or URL uploads.

@@ -160,9 +160,11 @@ async def _standalone_send(
                 return {"success": False, "error": f"Media file not found or could not be staged: {media_path}"}
             seg_type = guess_media_segment_type(staged_path, is_voice=is_voice)
             file_uri = _file_uri(staged_path)
+            original_name_source = url_unquote(urlparse(str(media_path)).path) if str(media_path).startswith("file://") else str(media_path)
+            upload_name = os.path.basename(original_name_source) or os.path.basename(staged_path) or "file"
             if kwargs.get("force_document") or seg_type not in {"image", "record", "video"}:
                 upload_action = "upload_group_file" if msg_kind == "group" else "upload_private_file"
-                params = {id_key: target, "file": file_uri, "name": os.path.basename(staged_path) or "file"}
+                params = {id_key: target, "file": file_uri, "name": upload_name}
                 last_result = await asyncio.to_thread(_post_onebot_http, http_api_url, token, upload_action, params)
             else:
                 last_result = await asyncio.to_thread(

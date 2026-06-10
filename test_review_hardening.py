@@ -41,6 +41,44 @@ def test_send_document_accepts_file_uri_inside_media_cache(tmp_path):
     assert bot.calls[0][1]["file"] == media.as_uri()
 
 
+def test_send_document_exposes_file_id_from_upload_response():
+    class Bot(_CaptureBot):
+        async def _send_action_conn(self, conn, action, params, timeout=30.0):
+            self.calls.append((action, params, timeout))
+            return {"retcode": 0, "data": {"file_id": "file-123"}}
+
+    bot = Bot()
+    result = asyncio.run(bot.send_document("group_67890", "https://example.com/report.html", file_name="report.html"))
+    assert result.success is True
+    assert result.message_id == "file-123"
+    assert bot.calls[0][0] == "upload_group_file"
+    assert bot.calls[0][1]["group_id"] == 67890
+
+
+def test_standalone_http_document_upload_preserves_original_filename(tmp_path, monkeypatch):
+    src = tmp_path / "report.html"
+    src.write_text("ok", encoding="utf-8")
+    calls = []
+
+    def fake_post(http_api_url, token, action, params):
+        calls.append((http_api_url, token, action, params))
+        return {"success": True, "message_id": "file-1"}
+
+    monkeypatch.setattr(results_impl, "_post_onebot_http", fake_post)
+    cfg = SimpleNamespace(extra={"http_api_url": "http://127.0.0.1:3001"})
+    result = asyncio.run(adapter_impl._standalone_send(
+        cfg,
+        "group_67890",
+        "",
+        media_files=[(str(src), False)],
+        force_document=True,
+    ))
+    assert result == {"success": True, "message_id": "file-1"}
+    assert calls[0][2] == "upload_group_file"
+    assert calls[0][3]["group_id"] == 67890
+    assert calls[0][3]["name"] == "report.html"
+
+
 def test_send_document_rejects_empty_path_before_upload():
     bot = _CaptureBot()
     result = asyncio.run(bot.send_document("private_12345", "   "))
