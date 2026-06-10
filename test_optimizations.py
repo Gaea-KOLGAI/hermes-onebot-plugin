@@ -55,12 +55,12 @@ def test_yaml_bridge_sets_env_and_returns_extra(monkeypatch):
     extra = _apply_yaml_config({}, {"extra": {
         "ws_url": "ws://127.0.0.1:8002",
         "http_api_url": "http://127.0.0.1:3000",
-        "allowed_users": ["123456789"],
+        "allowed_users": ["100000001"],
         "allow_all": False,
     }})
     assert os.environ["ONEBOT_WS_URL"] == "ws://127.0.0.1:8002"
     assert os.environ["ONEBOT_HTTP_API_URL"] == "http://127.0.0.1:3000"
-    assert os.environ["ONEBOT_ALLOWED_USERS"] == "123456789"
+    assert os.environ["ONEBOT_ALLOWED_USERS"] == "100000001"
     assert os.environ["ONEBOT_ALLOW_ALL_USERS"] == "false"
     assert extra["http_api_url"] == "http://127.0.0.1:3000"
 
@@ -118,9 +118,9 @@ def test_group_upload_notice_is_passive_and_does_not_dispatch():
     bot = PassiveUploadAdapter()
     data = {
         "notice_type": "group_upload",
-        "group_id": 1103659691,
-        "user_id": 257155386,
-        "file": {"name": "Hermes.Studio-0.6.10-x64.exe", "size": 146393250},
+        "group_id": 1000000001,
+        "user_id": 100000001,
+        "file": {"name": "example.bin", "size": 146393250},
     }
     asyncio.run(bot._handle_notice(data, bot._default_conn))
     assert bot.group_upload_calls == 0

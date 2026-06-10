@@ -983,15 +983,17 @@ try:
             seen["metadata"] = metadata
             return SendResult(success=True)
         adapter.send = fake_send
-        meta = {"mention_originator_user_id": "12345", "admin_only": True}
+        meta = {"originator_user_id": "12345", "admin_only": True}
         result = await adapter.send_exec_approval("group_67890", "rm -rf /tmp/x", "sess", metadata=meta)
         assert result.success
-        assert seen["metadata"] is meta
-        result = await adapter.send_update_prompt("group_67890", "确认更新？", metadata=meta)
+        assert seen["metadata"]["originator_user_id"] == "12345"
+        assert seen["metadata"]["mention_originator_user_id"] == "12345"
+        assert seen["metadata"]["mention_reason"] == "approval_prompt"
+        result = await adapter.send_update_prompt("group_67890", "确认更新？", metadata=seen["metadata"])
         assert result.success
-        assert seen["metadata"] is meta
+        assert seen["metadata"]["mention_originator_user_id"] == "12345"
     asyncio.run(_exercise_approval_metadata_passthrough())
-    ok("审批和更新提示透传 mention metadata")
+    ok("审批提示自动补强通知 mention metadata，更新提示透传 mention metadata")
 except Exception as e:
     fail("approval mention metadata", str(e))
 

@@ -26,6 +26,14 @@ class MessageMixin:
         admin_qq = (getattr(conn, 'admin_qq', None)
                     or os.getenv("ONEBOT_ADMIN_QQ", "").strip()
                     or (conn.allowed_users[0] if conn.allowed_users else None))
+        chat_id = _make_chat_id(data, account_name)
+        approval_chat_ids = [chat_id]
+        if self._multi_account and account_name and chat_id.startswith(f"{account_name}:"):
+            approval_chat_ids.append(chat_id.split(":", 1)[1])
+        for approval_chat_id in approval_chat_ids:
+            if await self._resolve_approval_shortcut(approval_chat_id, text_for_cmd, user_id, admin_qq) or \
+               await self._handle_update_shortcut(approval_chat_id, text_for_cmd):
+                return
         if await self._try_handle_command(data, conn, text_for_cmd, msg_type, user_id, admin_qq):
             return
         if not self._check_wake_trigger(msg_type, is_slash_cmd, text_for_cmd, raw_message, conn, segments):
@@ -33,7 +41,6 @@ class MessageMixin:
         parsed = await self._parse_message_segments(data, conn, raw_message, text_for_cmd, segments)
         if parsed is None:
             return
-        chat_id = _make_chat_id(data, account_name)
         if parsed["text"] and not parsed["images"] and not parsed["voice_url"]:
             if await self._resolve_approval_shortcut(chat_id, parsed["text"], user_id, admin_qq) or \
                await self._handle_update_shortcut(chat_id, parsed["text"]):
