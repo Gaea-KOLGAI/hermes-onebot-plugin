@@ -54,7 +54,7 @@ def _notice_approval_candidate_chat_ids(self, data: dict, conn: _NapCatConnectio
     candidate_chat_ids = []
     if data.get("group_id"):
         candidate_chat_ids.append(f"group_{data.get('group_id')}")
-    if actor_id:
+    elif actor_id:
         candidate_chat_ids.append(f"private_{actor_id}")
     if self._multi_account:
         candidate_chat_ids = [f"{conn.name}:{cid}" for cid in candidate_chat_ids] + candidate_chat_ids
@@ -137,7 +137,7 @@ def _reaction_has_approval_emoji(data: dict, approval_emoji_id: str = "66") -> b
 async def _resolve_notice_approval(self, data: dict, conn: _NapCatConnection, actor_id: str, choice: str, *, target_message_id: str = "") -> bool:
     if not _HAS_APPROVAL:
         return False
-    admin_qq = os.getenv("ONEBOT_ADMIN_QQ") or conn.admin_qq or (conn.allowed_users[0] if conn.allowed_users else None)
+    admin_qq = (conn.admin_qq or os.getenv("ONEBOT_ADMIN_QQ", "")).strip()
     for chat_id in _notice_approval_candidate_chat_ids(self, data, conn, actor_id):
         if target_message_id:
             expected_message_id = str(self._pending_approval_messages.get(chat_id, "") or "")
@@ -147,7 +147,7 @@ async def _resolve_notice_approval(self, data: dict, conn: _NapCatConnection, ac
         if is_admin_approval and (not admin_qq or str(actor_id) != str(admin_qq)):
             continue
         if chat_id in self._pending_approvals:
-            if await self._resolve_approval_shortcut(chat_id, choice, actor_id, admin_qq):
+            if await self._resolve_approval_shortcut(chat_id, choice, actor_id, admin_qq, from_notice=True):
                 return True
     return False
 
@@ -179,6 +179,8 @@ async def handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
         target_id = data.get("target_id", "")
         self_id = data.get("self_id", "")
         if str(target_id) != str(self_id):
+            return
+        if data.get("group_id"):
             return
         if await _resolve_notice_approval(self, data, conn, poker_id, "1"):
             return

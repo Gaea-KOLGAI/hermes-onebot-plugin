@@ -91,9 +91,20 @@ class ApprovalMixin:
         self._pending_update_chats[chat_id] = time.time()
         return await self.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
     async def _resolve_approval_shortcut(
-        self, chat_id: str, user_text: str, user_id: str = "", admin_qq: str = "",
+        self,
+        chat_id: str,
+        user_text: str,
+        user_id: str = "",
+        admin_qq: str = "",
+        *,
+        reply_to_message_id: str = "",
+        from_notice: bool = False,
     ) -> bool:
         if not _HAS_APPROVAL:
+            return False
+        text = _strip_slash(user_text.strip().lower())
+        choice = _APPROVAL_CHOICES.get(text)
+        if choice is None:
             return False
         lock = self._approval_locks.setdefault(chat_id, asyncio.Lock())
         async with lock:
@@ -110,8 +121,12 @@ class ApprovalMixin:
                     return False
             except ImportError:
                 pass
+            msg_type, target_id = _parse_chat_id(chat_id)
+            if msg_type == "group" and not from_notice:
+                expected_message_id = str(self._pending_approval_messages.get(chat_id, "") or "")
+                if not expected_message_id or str(reply_to_message_id or "") != expected_message_id:
+                    return False
             if user_id:
-                msg_type, target_id = _parse_chat_id(chat_id)
                 auth_data = {"message_type": msg_type, "user_id": str(user_id)}
                 if msg_type == "group":
                     auth_data["group_id"] = target_id
@@ -127,10 +142,6 @@ class ApprovalMixin:
                     return True
                 if user_id and str(user_id) != str(admin_qq):
                     return False
-            text = _strip_slash(user_text.strip().lower())
-            choice = _APPROVAL_CHOICES.get(text)
-            if choice is None:
-                return False
             try:
                 from tools.approval import resolve_gateway_approval
                 resolve_gateway_approval(session_key, choice)

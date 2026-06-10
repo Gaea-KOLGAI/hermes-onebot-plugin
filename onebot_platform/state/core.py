@@ -182,10 +182,27 @@ class _MediaCache:
             if not dest.exists() or dest.stat().st_size != src.stat().st_size:
                 shutil.copy2(src, dest)
             os.chmod(dest, 0o644)
+            self._cleanup_outbound_staged_files()
             return str(dest)
         except OSError as exc:
             logger.warning("Failed to stage outbound OneBot attachment %s: %s", src, exc)
             return None
+
+    def _cleanup_outbound_staged_files(self):
+        try:
+            staged = sorted(
+                (
+                    path for path in self._dir.glob("outbound-*")
+                    if path.is_file() and not path.is_symlink()
+                ),
+                key=lambda path: (path.stat().st_mtime_ns, path.name),
+            )
+            overflow = len(staged) - self._max_files
+            if overflow > 0:
+                for old_file in staged[:overflow]:
+                    old_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     async def download(self, url: str, http_client, media_type: str = "image") -> Optional[str]:
         if not url or not self._httpx_available:
@@ -253,8 +270,12 @@ class _MediaCache:
     def _cleanup_subdir(self, cache_subdir: Path):
         try:
             all_files = sorted(
-                (cache_subdir / filename for filename in os.listdir(cache_subdir) if os.path.isfile(cache_subdir / filename)),
-                key=lambda path: os.path.getmtime(path),
+                (
+                    cache_subdir / filename
+                    for filename in os.listdir(cache_subdir)
+                    if not filename.startswith(".") and os.path.isfile(cache_subdir / filename)
+                ),
+                key=lambda path: (os.path.getmtime(path), path.name),
             )
             if len(all_files) > self._max_files:
                 overflow = len(all_files) - self._max_files
@@ -338,9 +359,9 @@ class _NapCatConnection:
         return list(self.allowed_users)
 
     def is_user_authorized(self, user_id: str, msg_type: str, data: dict) -> bool:
-        if self.allow_all:
-            return True
         if msg_type == "private":
+            if self.allow_all:
+                return True
             if self.allowed_users:
                 return user_id in self.allowed_users
             if "empty_allowlist" not in self._warnings:
@@ -351,6 +372,8 @@ class _NapCatConnection:
             group_id = str(data.get("group_id", ""))
             if self.group_ids and group_id not in self.group_ids:
                 return False
+            if self.allow_all:
+                return True
             if self.allowed_users:
                 return user_id in self.allowed_users
             if "empty_group_allowlist" not in self._warnings:

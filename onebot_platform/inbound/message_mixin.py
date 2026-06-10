@@ -16,22 +16,25 @@ class MessageMixin:
         message_id = str(data.get("message_id", ""))
         if self._check_duplicate_and_self(data, conn):
             return
-        early_chat_id = _make_chat_id(data, account_name)
-        self._chat_msg_seq[early_chat_id] = self._chat_msg_seq.get(early_chat_id, 0) + 1
         segments = _extract_segments(raw_message)
         text_for_cmd = _segments_text(segments)
+        reply_to_message_id = _extract_reply(segments)
         is_slash_cmd = text_for_cmd.startswith("/")
         if not await self._check_authorization_async(user_id, msg_type, data, conn):
+            self._cleanup_seq_dictionaries(_make_chat_id(data, account_name))
             return
         admin_qq = (getattr(conn, 'admin_qq', None)
                     or os.getenv("ONEBOT_ADMIN_QQ", "").strip()
-                    or (conn.allowed_users[0] if conn.allowed_users else None))
+                    or "")
         chat_id = _make_chat_id(data, account_name)
+        self._chat_msg_seq[chat_id] = self._chat_msg_seq.get(chat_id, 0) + 1
         approval_chat_ids = [chat_id]
         if self._multi_account and account_name and chat_id.startswith(f"{account_name}:"):
             approval_chat_ids.append(chat_id.split(":", 1)[1])
         for approval_chat_id in approval_chat_ids:
-            if await self._resolve_approval_shortcut(approval_chat_id, text_for_cmd, user_id, admin_qq) or \
+            if await self._resolve_approval_shortcut(
+                approval_chat_id, text_for_cmd, user_id, admin_qq, reply_to_message_id=reply_to_message_id
+            ) or \
                await self._handle_update_shortcut(approval_chat_id, text_for_cmd):
                 return
         if await self._try_handle_command(data, conn, text_for_cmd, msg_type, user_id, admin_qq):
@@ -42,7 +45,9 @@ class MessageMixin:
         if parsed is None:
             return
         if parsed["text"] and not parsed["images"] and not parsed["voice_url"]:
-            if await self._resolve_approval_shortcut(chat_id, parsed["text"], user_id, admin_qq) or \
+            if await self._resolve_approval_shortcut(
+                chat_id, parsed["text"], user_id, admin_qq, reply_to_message_id=parsed.get("reply_id", "")
+            ) or \
                await self._handle_update_shortcut(chat_id, parsed["text"]):
                 return
         text = self._strip_at_mentions(parsed["text"], raw_message, conn, msg_type)
@@ -89,7 +94,7 @@ class MessageMixin:
     def _check_wake_trigger(self, msg_type: str, is_slash_cmd: bool,
                             text_for_cmd: str, raw_message, conn,
                             segments: Optional[List[Dict[str, Any]]] = None) -> bool:
-        if msg_type == "group" and not is_slash_cmd:
+        if msg_type == "group":
             segments_for_wake = segments if segments is not None else _extract_segments(raw_message)
             if not conn.is_group_wake_triggered(raw_message, text_for_cmd, segments_for_wake):
                 return False
@@ -158,8 +163,14 @@ class MessageMixin:
             active_approvals = set(self._pending_approvals)
             self._approval_locks = {k: v for k, v in self._approval_locks.items() if k in active_approvals}
         self._bg_delete_tasks = {t for t in self._bg_delete_tasks if not t.done()}
-        for k in [k for k, t in self._active_tasks.items() if t.done()]:
-            del self._active_tasks[k]
+        for k, bucket in list(self._active_tasks.items()):
+            if isinstance(bucket, set):
+                done = {t for t in bucket if t.done()}
+                bucket.difference_update(done)
+                if not bucket:
+                    del self._active_tasks[k]
+            elif bucket.done():
+                del self._active_tasks[k]
         for d, ttl in ((self._reject_notified, REJECT_NOTIFY_TTL), (self._pending_update_chats, PENDING_UPDATE_TTL)):
             for k in [k for k, v in d.items() if now - v > ttl]:
                 del d[k]

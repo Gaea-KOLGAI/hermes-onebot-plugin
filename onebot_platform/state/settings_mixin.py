@@ -61,6 +61,8 @@ class SettingsMixin:
         if not self._multi_account:
             return self._default_conn
         account = _extract_account_from_chat_id(chat_id)
-        if account and account in self._connections:
-            return self._connections[account]
+        if account:
+            if account in self._connections:
+                return self._connections[account]
+            raise ValueError(f"unknown OneBot account: {account}")
         return self._default_conn

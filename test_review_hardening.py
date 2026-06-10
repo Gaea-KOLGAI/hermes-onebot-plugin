@@ -4,10 +4,16 @@ import os
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 import adapter
 import onebot_platform.adapter as adapter_impl
+import onebot_platform.inbound.message_mixin as message_impl
+import onebot_platform.outbound.media as media_impl
 import onebot_platform.outbound.notices as notices_impl
 import onebot_platform.outbound.results as results_impl
+import onebot_platform.outbound.send_mixin as send_mixin_impl
+import onebot_platform.transport.connection_mixin as connection_impl
 import onebot_platform.config.core as config_core
 from adapter import OneBotAdapter, _MediaCache
 from onebot_platform.state.core import DedupCache, RateLimiter, MemberCache
@@ -342,8 +348,8 @@ def test_send_action_uses_http_fallback_when_ws_send_raises(monkeypatch):
             raise OSError("broken ws")
     conn.ws = Ws()
     http_calls = []
-    async def fake_http(conn_arg, action, params):
-        http_calls.append((conn_arg, action, params))
+    async def fake_http(conn_arg, action, params, timeout=15.0):
+        http_calls.append((conn_arg, action, params, timeout))
         return {"retcode": 0, "data": {"message_id": 9}}
     monkeypatch.setattr(bot, "_http_call_conn", fake_http)
     result = asyncio.run(bot._send_action_conn(conn, "send_private_msg", {"user_id": 1, "message": []}))
@@ -487,9 +493,14 @@ def test_core_approval_shortcut_respects_allowlist(monkeypatch):
     calls = _install_fake_approval(monkeypatch)
     bot = _ApprovalBot()
     bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
 
-    blocked = asyncio.run(bot._resolve_approval_shortcut("group_67890", "1", "99999", "12345"))
-    allowed = asyncio.run(bot._resolve_approval_shortcut("group_67890", "1", "12345", "12345"))
+    blocked = asyncio.run(bot._resolve_approval_shortcut(
+        "group_67890", "1", "99999", "12345", reply_to_message_id="approval-msg-1"
+    ))
+    allowed = asyncio.run(bot._resolve_approval_shortcut(
+        "group_67890", "1", "12345", "12345", reply_to_message_id="approval-msg-1"
+    ))
 
     assert blocked is False
     assert allowed is True
@@ -497,16 +508,40 @@ def test_core_approval_shortcut_respects_allowlist(monkeypatch):
     assert bot.sent == [("group_67890", "✓ 单次批准", None, None)]
 
 
-def test_group_approval_text_shortcut_bypasses_wake_requirement(monkeypatch):
+def test_group_approval_text_shortcut_requires_reply_to_prompt(monkeypatch):
     calls = _install_fake_approval(monkeypatch)
     bot = _ApprovalBot()
     bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
     data = {
         "message_type": "group",
         "group_id": 67890,
         "user_id": 12345,
         "message_id": "user-msg-1",
         "message": [{"type": "text", "data": {"text": "2"}}],
+    }
+
+    asyncio.run(bot._handle_message(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_group_approval_text_shortcut_allows_reply_to_prompt(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "message_type": "group",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "user-msg-2",
+        "message": [
+            {"type": "reply", "data": {"id": "approval-msg-1"}},
+            {"type": "text", "data": {"text": "2"}},
+        ],
     }
 
     asyncio.run(bot._handle_message(data, bot._default_conn))
@@ -520,14 +555,14 @@ def test_admin_approval_bypasses_allowlist_and_group_scope(monkeypatch):
     bot = _ApprovalBot(admin_qq="99999", allowed_users=["12345"], group_ids=["67890"])
     bot._pending_approvals["group_11111"] = "session-key"
 
-    allowed = asyncio.run(bot._resolve_approval_shortcut("group_11111", "1", "99999", "99999"))
+    allowed = asyncio.run(bot._resolve_approval_shortcut("group_11111", "1", "99999", "99999", from_notice=True))
 
     assert allowed is True
     assert calls == [("session-key", "once")]
     assert bot.sent == [("group_11111", "✓ 单次批准", None, None)]
 
 
-def test_group_poke_approval_allows_whitelisted_user(monkeypatch):
+def test_group_poke_approval_does_not_resolve_group_pending(monkeypatch):
     calls = _install_fake_approval(monkeypatch)
     bot = _ApprovalBot()
     bot._pending_approvals["group_67890"] = "session-key"
@@ -542,8 +577,9 @@ def test_group_poke_approval_allows_whitelisted_user(monkeypatch):
 
     asyncio.run(bot._handle_notice(data, bot._default_conn))
 
-    assert calls == [("session-key", "once")]
-    assert bot.sent == [("group_67890", "✓ 单次批准", None, None)]
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"
 
 
 def test_exec_approval_prompt_tracks_message_id_for_reaction():
@@ -743,3 +779,244 @@ def test_reaction_approval_ignores_other_emoji(monkeypatch):
     assert calls == []
     assert bot.sent == []
     assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_allow_all_still_respects_group_scope():
+    bot = OneBotAdapter({"extra": {
+        "ws_url": "ws://127.0.0.1:3000/ws",
+        "allow_all": True,
+        "group_ids": ["67890"],
+    }})
+    conn = bot._default_conn
+
+    assert conn.is_user_authorized("99999", "private", {"message_type": "private", "user_id": 99999}) is True
+    assert conn.is_user_authorized("99999", "group", {"message_type": "group", "group_id": 67890, "user_id": 99999}) is True
+    assert conn.is_user_authorized("99999", "group", {"message_type": "group", "group_id": 11111, "user_id": 99999}) is False
+
+
+def test_allowed_user_is_not_implicit_admin_for_approval(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot(admin_qq="", allowed_users=["12345"], group_ids=["67890"])
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_admin["group_67890"] = True
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+
+    allowed = asyncio.run(bot._resolve_approval_shortcut(
+        "group_67890", "1", "12345", "", reply_to_message_id="approval-msg-1"
+    ))
+
+    assert allowed is True
+    assert calls == []
+    assert bot.sent == [("group_67890", "✗ 管理员未配置，无法批准此操作", None, None)]
+    assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_group_reaction_does_not_resolve_private_pending(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["private_12345"] = "session-key"
+    bot._pending_approval_messages["private_12345"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_reaction",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "qface_id": "66",
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["private_12345"] == "session-key"
+
+
+def test_unknown_multi_account_prefix_fails_closed_without_default_send():
+    bot = _CaptureBot({"extra": {"accounts": [
+        {"name": "main", "ws_url": "ws://127.0.0.1:3000/ws", "allowed_users": ["12345"]},
+        {"name": "work", "ws_url": "ws://127.0.0.1:3001/ws", "allowed_users": ["12345"]},
+    ]}})
+
+    result = asyncio.run(bot.send("missing:private_12345", "hello"))
+
+    assert result.success is False
+    assert "unknown onebot account" in result.error.lower()
+    assert bot.calls == []
+
+
+def test_duplicate_multi_account_name_is_rejected():
+    with pytest.raises(ValueError, match="duplicate.*account"):
+        OneBotAdapter({"extra": {"accounts": [
+            {"name": "main", "ws_url": "ws://127.0.0.1:3000/ws"},
+            {"name": "main", "ws_url": "ws://127.0.0.1:3001/ws"},
+        ]}})
+
+
+def test_multi_account_init_skips_invalid_ws_url_and_keeps_valid_account():
+    bot = OneBotAdapter({"extra": {"accounts": [
+        {"name": "bad", "ws_url": "http://127.0.0.1:3000/ws"},
+        {"name": "ok", "ws_url": "ws://127.0.0.1:3001/ws"},
+    ]}})
+
+    assert list(bot._connections) == ["ok"]
+    assert bot._default_conn.ws_url == "ws://127.0.0.1:3001/ws"
+
+
+def test_reverse_ws_public_listener_without_token_is_rejected(monkeypatch):
+    calls = []
+
+    async def fake_serve(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(close=lambda: None, wait_closed=lambda: None)
+
+    monkeypatch.setattr(connection_impl, "WEBSOCKETS_AVAILABLE", True)
+    monkeypatch.setattr(connection_impl.websockets, "serve", fake_serve)
+    bot = OneBotAdapter({"extra": {
+        "ws_url": "ws://0.0.0.0:18082/ws",
+        "ws_mode": "reverse",
+    }})
+
+    result = asyncio.run(bot._connect_reverse_conn(bot._default_conn))
+
+    assert result is False
+    assert calls == []
+    assert bot._default_conn.ws_server is None
+
+
+def test_unknown_group_slash_still_requires_wake_at():
+    bot = _ApprovalBot()
+    bot._default_conn.self_id = "11111"
+
+    assert bot._check_wake_trigger(
+        "group",
+        True,
+        "/unknown",
+        [{"type": "text", "data": {"text": "/unknown"}}],
+        bot._default_conn,
+        [{"type": "text", "data": {"text": "/unknown"}}],
+    ) is False
+
+
+def test_send_document_rejects_unsafe_remote_url(monkeypatch):
+    bot = _CaptureBot()
+    monkeypatch.setattr(send_mixin_impl, "_is_safe_media_download_url", lambda url: False)
+
+    result = asyncio.run(bot.send_document("private_12345", "http://127.0.0.1/report.txt"))
+
+    assert result.success is False
+    assert "unsafe" in result.error.lower()
+    assert bot.calls == []
+
+
+def test_send_document_sanitizes_upload_name(tmp_path):
+    media = tmp_path / "safe.txt"
+    media.write_text("ok", encoding="utf-8")
+    bot = _CaptureBot(media_cache=_MediaCache(tmp_path))
+
+    result = asyncio.run(bot.send_document("group_67890", str(media), file_name="../evil\r\nname.txt"))
+
+    assert result.success is True
+    upload_name = bot.calls[0][1]["name"]
+    assert "/" not in upload_name and "\\" not in upload_name
+    assert "\r" not in upload_name and "\n" not in upload_name
+    assert upload_name == "evilname.txt"
+
+
+def test_http_fallback_inherits_timeout_and_rate_limit(monkeypatch):
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, n=-1): return b'{"retcode":0,"data":{"message_id":7}}'
+
+    observed = {"timeouts": [], "acquires": 0}
+
+    def fake_urlopen(req, timeout=30):
+        observed["timeouts"].append(timeout)
+        return Resp()
+
+    class Limiter:
+        async def acquire(self):
+            observed["acquires"] += 1
+
+    monkeypatch.setattr(send_mixin_impl.urllib.request, "urlopen", fake_urlopen)
+    bot = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3000/ws", "http_api_url": "http://127.0.0.1:3001"}})
+    bot._default_conn.rate_limiter = Limiter()
+
+    result = asyncio.run(bot._send_action_conn(
+        bot._default_conn,
+        "send_private_msg",
+        {"user_id": 1, "message": []},
+        timeout=4.5,
+    ))
+
+    assert result["retcode"] == 0
+    assert observed == {"timeouts": [4.5], "acquires": 1}
+
+
+def test_dispatch_for_chat_tracks_multiple_tasks_per_chat():
+    async def run():
+        bot = _CaptureBot()
+        gate = asyncio.Event()
+
+        async def wait_forever():
+            await gate.wait()
+
+        bot._dispatch_for_chat("private_12345", wait_forever())
+        bot._dispatch_for_chat("private_12345", wait_forever())
+        await asyncio.sleep(0)
+        bucket = bot._active_tasks.get("private_12345")
+        assert isinstance(bucket, set)
+        assert len(bucket) == 2
+        gate.set()
+        await asyncio.gather(*list(bucket))
+        await asyncio.sleep(0)
+        assert "private_12345" not in bot._active_tasks
+
+    asyncio.run(run())
+
+
+def test_prepare_outbound_local_file_prunes_old_staged_files(tmp_path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    cache = _MediaCache(tmp_path / "cache", max_files=2)
+    for idx in range(3):
+        src = src_dir / f"file{idx}.txt"
+        src.write_text(str(idx), encoding="utf-8")
+        staged = cache.prepare_outbound_local_file(str(src))
+        assert staged
+
+    staged_files = sorted((tmp_path / "cache").glob("outbound-*"))
+    assert len(staged_files) <= 2
+
+
+def test_cleanup_subdir_does_not_delete_active_dot_tmp(tmp_path):
+    cache = _MediaCache(tmp_path / "cache", max_files=1)
+    subdir = tmp_path / "cache" / "image"
+    subdir.mkdir(parents=True)
+    tmp = subdir / ".image_active.tmp"
+    old = subdir / "image_old.jpg"
+    new = subdir / "image_new.jpg"
+    tmp.write_text("tmp", encoding="utf-8")
+    old.write_text("old", encoding="utf-8")
+    new.write_text("new", encoding="utf-8")
+    os.utime(old, (100, 100))
+    os.utime(new, (200, 200))
+
+    cache._cleanup_subdir(subdir)
+
+    assert tmp.exists()
+    assert new.exists()
+    assert not old.exists()
+
+
+def test_single_delete_timeout_does_not_permanently_disable_delete_support():
+    class Bot(_CaptureBot):
+        async def _delete_message_with_status(self, chat_id, message_id, timeout=15.0):
+            return None
+
+    bot = Bot()
+    result = asyncio.run(bot.edit_message("private_12345", "1", "replacement"))
+
+    assert result.success is True
+    assert bot._delete_msg_supported is True
+

@@ -1,7 +1,7 @@
 name: onebot-platform
 label: OneBot (NapCat)
 kind: platform
-version: 2.2.0
+version: 2.2.1
 description: >
   OneBot v11 gateway adapter for Hermes Agent with multi-account support.
   Connects to NapCat (or any OneBot v11 implementation) via WebSocket
@@ -37,6 +37,9 @@ description: >
                 allowed_users: ["YOUR_QQ_ID"]
                 home_channel: "private_YOUR_QQ_ID"
 
+  Reverse WS security:
+  Non-loopback reverse WebSocket listeners require access_token; NapCat must send an Authorization header using Bearer plus the same access token.
+
   Whitelist Management Commands (admin only):
   - /adduser <QQ号> - 添加用户到白名单
   - /removeuser <QQ号> - 从白名单移除用户
@@ -47,7 +50,7 @@ description: >
   - /settool on|off - 直接修改 Gateway 层工具调用提示开关
   - /setmd on|off - Markdown清理开关
   - /setallowall on|off - 允许所有人开关
-  - /config - 查看当前配置
+  - /onebot config - 查看 OneBot 当前聊天配置
 author: hermes-user
 requires_env: []
 optional_env:
@@ -68,7 +71,7 @@ optional_env:
     prompt: "Allow all users? (true/false)"
     password: false
   - name: ONEBOT_HOME_CHANNEL
-    description: "Default chat for cron/notification delivery (QQ number or group number)"
+    description: "Default chat for cron/notification delivery. Single-account: private_123/group_456. Multi-account should prefer accounts[].home_channel or prefixed chat_id like main:private_123."
     prompt: "Home channel (QQ/group number, optional)"
     password: false
   - name: ONEBOT_GROUP_IDS
@@ -84,7 +87,7 @@ optional_env:
     prompt: "WebSocket mode (forward/reverse, default: forward)"
     password: false
   - name: ONEBOT_ADMIN_QQ
-    description: "Admin QQ number authorized to use management commands (e.g. /adduser, /settool)"
-    prompt: "Admin QQ number (optional, defaults to first allowed user)"
+    description: "Admin QQ number authorized to use management commands (e.g. /adduser, /settool). No implicit fallback to the first allowed user."
+    prompt: "Admin QQ number (optional, required for admin commands)"
     password: false
 

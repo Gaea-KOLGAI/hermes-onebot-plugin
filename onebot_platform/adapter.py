@@ -54,14 +54,22 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
         self._multi_account: bool = False
         if isinstance(accounts_cfg, list) and accounts_cfg:
             self._multi_account = True
+            seen_names = set()
             for acct in accounts_cfg:
                 if not isinstance(acct, dict):
                     continue
                 name = str(acct.get("name", "default")).strip()
                 if not name:
                     continue
+                if name in seen_names:
+                    raise ValueError(f"duplicate OneBot account name: {name}")
+                seen_names.add(name)
+                ws_url = str(acct.get("ws_url", "")).strip()
+                if not ws_url.startswith(("ws://", "wss://")):
+                    logger.warning("Skipping OneBot account %s with invalid ws_url", name)
+                    continue
                 conn = _NapCatConnection(
-                    name=name, ws_url=acct.get("ws_url", ""),
+                    name=name, ws_url=ws_url,
                     access_token=acct.get("access_token", ""),
                     ws_mode=acct.get("ws_mode", "forward"),
                     allowed_users=[str(u) for u in acct.get("allowed_users", [])],
@@ -96,6 +104,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
             setattr(self, attr, {})
         self._unsupported_actions = set()
         self._delete_msg_supported = True
+        self._delete_msg_circuit = {"failures": 0, "opened_until": 0.0}
         self._bg_delete_tasks = set()
         self._last_seq_cleanup_time = 0
         self._media_cache = kwargs.get("media_cache") or _MediaCache(MEDIA_CACHE_DIR)

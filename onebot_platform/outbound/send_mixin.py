@@ -32,7 +32,7 @@ class SendMixin:
             ws = await self._wait_for_ready_ws_conn(conn)
         if not ws or getattr(ws, "close_code", None) is not None:
             if conn.http_api_url:
-                return await self._http_call_conn(conn, action, params)
+                return await self._http_call_conn(conn, action, params, timeout=timeout)
             return {"status": "failed", "retcode": -1, "msg": "not connected"}
         echo = str(uuid.uuid4())
         payload = {"action": action, "params": params, "echo": echo}
@@ -59,7 +59,7 @@ class SendMixin:
             self._cleanup_echo(conn, echo)
             if conn.http_api_url:
                 logger.debug("WS send failed for %s; trying HTTP fallback: %s", action, e)
-                return await self._http_call_conn(conn, action, params)
+                return await self._http_call_conn(conn, action, params, timeout=timeout)
             return {"status": "failed", "retcode": -1, "msg": str(e)}
         finally:
             self._cleanup_echo(conn, echo)
@@ -76,7 +76,7 @@ class SendMixin:
             logger.debug("Reply send failed: retcode=%s", result.get("retcode"))
     async def _send_action(self, action: str, params: dict, timeout: float = 15.0) -> dict:
         return await self._send_action_conn(self._default_conn, action, params, timeout)
-    async def _http_call_conn(self, conn: _NapCatConnection, action: str, params: dict) -> dict:
+    async def _http_call_conn(self, conn: _NapCatConnection, action: str, params: dict, timeout: float = 15.0) -> dict:
         if not conn.http_api_url:
             return {"status": "failed", "retcode": -1, "msg": "HTTP API not configured"}
         parsed = urlparse(conn.http_api_url)
@@ -89,9 +89,10 @@ class SendMixin:
             headers["Authorization"] = f"Bearer {conn.access_token}"
         def _sync_call():
             req = urllib.request.Request(url, data=payload, headers=headers)
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return _read_bounded_json_response(resp)
         try:
+            await conn.rate_limiter.acquire()
             return await asyncio.to_thread(_sync_call)
         except urllib.error.HTTPError as e:
             return {"status": "failed", "retcode": e.code, "msg": f"HTTP {e.code}: {e.reason}"}
@@ -177,9 +178,12 @@ class SendMixin:
         logger.debug("Auto forward send failed; falling back to normal text send: %s", result.error)
         return None
     async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 15.0) -> dict:
-        conn = self._get_conn_for_chat(chat_id)
-        msg_kind, target_id = _parse_chat_id(chat_id)
-        action, params = self._send_msg_params(msg_kind, target_id, segments)
+        try:
+            conn = self._get_conn_for_chat(chat_id)
+            msg_kind, target_id = _parse_chat_id(chat_id)
+            action, params = self._send_msg_params(msg_kind, target_id, segments)
+        except (ValueError, TypeError) as e:
+            return {"status": "failed", "retcode": -1, "msg": str(e)}
         return await self._send_action_conn(conn, action, params, timeout=timeout)
     _media_extension = _media.media_extension
     _classify_media_path = _media.classify_media_path
@@ -187,6 +191,7 @@ class SendMixin:
     _prune_recent_outbound_media = _media.prune_recent_outbound_media
     _is_recent_outbound_media = _media.is_recent_outbound_media
     _mark_outbound_media_once = _media.mark_outbound_media_once
+    _unmark_outbound_media = _media.unmark_outbound_media
     _as_onebot_file_value = _media.as_onebot_file_value
     _send_media_path = _media.send_media_path
     async def send(
@@ -196,6 +201,7 @@ class SendMixin:
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        await self._ensure_settings_loaded()
         if chat_id not in getattr(self, '_in_edit_resend_count', {}) or getattr(self, '_in_edit_resend_count', {}).get(chat_id, 0) <= 0:
             _progress_map = getattr(self, '_last_progress_msg', None)
             if _progress_map is not None:
@@ -284,12 +290,17 @@ class SendMixin:
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        conn = self._get_conn_for_chat(chat_id)
-        msg_kind, target_id = _parse_chat_id(chat_id)
+        try:
+            conn = self._get_conn_for_chat(chat_id)
+            msg_kind, target_id = _parse_chat_id(chat_id)
+        except (ValueError, TypeError) as e:
+            return SendResult(success=False, error=str(e))
         raw_path = str(file_path).strip()
         if not raw_path:
             return SendResult(success=False, error="empty outbound file path")
         is_remote_url = raw_path.startswith(("http://", "https://"))
+        if is_remote_url and not _is_safe_media_download_url(raw_path):
+            return SendResult(success=False, error="unsafe remote file URL")
         local_path = ""
         if raw_path.startswith("file://"):
             local_path = url_unquote(urlparse(raw_path).path)
@@ -298,7 +309,8 @@ class SendMixin:
             if not os.path.isfile(local_path):
                 return SendResult(success=False, error=f"file not found: {raw_path}")
         name_source = local_path or urlparse(raw_path).path or raw_path
-        name = file_name or os.path.basename(name_source) or "file"
+        raw_name = file_name or os.path.basename(name_source) or "file"
+        name = re.sub(r"[\r\n\t\x00-\x1f\x7f]+", "", os.path.basename(str(raw_name).replace("\\", "/"))) or "file"
         try:
             file_uri = raw_path if is_remote_url else self._as_onebot_file_value(raw_path)
         except ValueError as e:
@@ -362,14 +374,15 @@ class SendMixin:
         metadata: Optional[Dict[str, Any]] = None,
         finalize: bool = False,
     ) -> SendResult:
-        if not self._delete_msg_supported:
+        if not self._delete_msg_supported or self._delete_circuit_is_open():
             return SendResult(success=True, message_id=message_id)
         _progress_map = getattr(self, '_last_progress_msg', None)
         real_message_id = (_progress_map or {}).get(chat_id) or message_id
         delete_result = await self._delete_message_with_status(chat_id, real_message_id, timeout=2.0)
         if delete_result is None:
-            self._delete_msg_supported = False
+            self._record_delete_failure()
             return SendResult(success=True, message_id=message_id)
+        self._record_delete_success()
         if not delete_result:
             return SendResult(success=True, message_id=message_id)
         self._in_edit_resend_count[chat_id] = self._in_edit_resend_count.get(chat_id, 0) + 1
@@ -389,10 +402,18 @@ class SendMixin:
     async def stop_typing(self, chat_id: str) -> None:
         await self.clear_input_status(chat_id)
     async def delete_message(self, chat_id: str, message_id: str, timeout: float = 5.0) -> bool:
-        if not self._delete_msg_supported:
+        if not self._delete_msg_supported or self._delete_circuit_is_open():
             return False
         status = await self._delete_message_with_status(chat_id, message_id, timeout=timeout)
+        if status is None:
+            self._record_delete_failure()
+            return False
+        if status is True:
+            self._record_delete_success()
         return status is True
+    _delete_circuit_is_open = _deletion.delete_circuit_is_open
+    _record_delete_failure = _deletion.record_delete_failure
+    _record_delete_success = _deletion.record_delete_success
     _fire_and_forget_delete = _deletion.fire_and_forget_delete
     _bg_delete = _deletion.bg_delete
     _delete_message_with_status = _deletion.delete_message_with_status

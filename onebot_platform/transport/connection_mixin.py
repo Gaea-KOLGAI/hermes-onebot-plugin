@@ -52,12 +52,31 @@ class ConnectionMixin:
         self._mark_connected()
         asyncio.create_task(self._fetch_self_info_conn(conn))
         return True
+    def _is_loopback_host(self, host: str) -> bool:
+        host = (host or "").strip().lower()
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
     async def _connect_reverse_conn(self, conn: _NapCatConnection) -> bool:
+        if conn.ws_server:
+            return True
         if not self._check_ws_prereqs(conn):
             return False
         parsed = urlparse(conn.ws_url)
         host = parsed.hostname or "0.0.0.0"
         port = parsed.port or 8082
+        if not conn.access_token and not self._is_loopback_host(host):
+            self._set_fatal_if_default(
+                conn,
+                "config_unsafe",
+                "reverse OneBot WebSocket on non-loopback host requires access_token",
+                retryable=False,
+            )
+            return False
         async def handler(websocket, path=None):
             await self._handle_reverse_ws_client(conn, websocket)
         try:
@@ -80,6 +99,19 @@ class ConnectionMixin:
                     pass
                 return
         else:
+            peer_host = ""
+            try:
+                remote = getattr(websocket, "remote_address", None)
+                if isinstance(remote, (tuple, list)) and remote:
+                    peer_host = str(remote[0])
+            except Exception:
+                peer_host = ""
+            if peer_host and not self._is_loopback_host(peer_host):
+                try:
+                    await websocket.close(4001, "Unauthorized")
+                except Exception:
+                    pass
+                return
             if "reverse_ws_no_token" not in conn._warnings:
                 logger.info("OneBot reverse WebSocket has no access token; accepting local NapCat connections")
                 conn._warnings.add("reverse_ws_no_token")
@@ -177,13 +209,28 @@ class ConnectionMixin:
             attempt += 1
     def _dispatch_for_chat(self, chat_id: str, coro, *, notice: bool = False) -> None:
         key = (chat_id + ":notice") if notice else chat_id
-        # Limit concurrent tasks per chat to prevent unbounded growth
-        chat_tasks = [(k, t) for k, t in self._active_tasks.items()
-                      if k.startswith(chat_id) and not t.done()]
+        # Limit concurrent tasks per chat to prevent unbounded growth while
+        # preserving every in-flight task handle for cancellation/cleanup.
+        chat_tasks = []
+        for active_key, bucket in list(self._active_tasks.items()):
+            tasks = bucket if isinstance(bucket, set) else {bucket}
+            for task in list(tasks):
+                if task.done():
+                    tasks.discard(task)
+                    continue
+                if active_key.startswith(chat_id):
+                    chat_tasks.append((active_key, task))
+            if isinstance(bucket, set) and not bucket:
+                self._active_tasks.pop(active_key, None)
         while len(chat_tasks) >= MAX_TASKS_PER_CHAT:
-            # Cancel the oldest task (dict preserves insertion order)
             oldest_key, oldest_task = chat_tasks.pop(0)
-            self._active_tasks.pop(oldest_key, None)
+            bucket = self._active_tasks.get(oldest_key)
+            if isinstance(bucket, set):
+                bucket.discard(oldest_task)
+                if not bucket:
+                    self._active_tasks.pop(oldest_key, None)
+            elif bucket is oldest_task:
+                self._active_tasks.pop(oldest_key, None)
             oldest_task.cancel()
         async def _wrapper():
             try:
@@ -193,10 +240,20 @@ class ConnectionMixin:
             except Exception as e:
                 logger.debug("Task exception in %s: %s", key, e)
             finally:
-                if self._active_tasks.get(key) is asyncio.current_task():
+                bucket = self._active_tasks.get(key)
+                current = asyncio.current_task()
+                if isinstance(bucket, set):
+                    bucket.discard(current)
+                    if not bucket:
+                        self._active_tasks.pop(key, None)
+                elif bucket is current:
                     self._active_tasks.pop(key, None)
         task = asyncio.create_task(_wrapper())
-        self._active_tasks[key] = task
+        bucket = self._active_tasks.setdefault(key, set())
+        if isinstance(bucket, set):
+            bucket.add(task)
+        else:
+            self._active_tasks[key] = {bucket, task}
     async def _receive_loop_conn(self, conn: _NapCatConnection) -> None:
         while self._running:
             ws = conn.ws

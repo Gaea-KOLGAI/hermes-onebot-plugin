@@ -49,9 +49,11 @@ async def disconnect_conn(self, conn: _NapCatConnection) -> None:
             return key.startswith(prefix)
         return not (conn_names and key.startswith(conn_names))
     for chat_id in [k for k in self._active_tasks if _is_ours(k)]:
-        task = self._active_tasks.pop(chat_id, None)
-        if task and not task.done():
-            task.cancel()
+        bucket = self._active_tasks.pop(chat_id, None)
+        tasks = bucket if isinstance(bucket, set) else ({bucket} if bucket else set())
+        for task in tasks:
+            if task and not task.done():
+                task.cancel()
 
 
 async def fetch_self_info_conn(self, conn: _NapCatConnection):
