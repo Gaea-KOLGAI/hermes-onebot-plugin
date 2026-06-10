@@ -379,10 +379,15 @@ class _ApprovalBot(_CaptureBot):
     def __init__(self, *, admin_qq="12345", allowed_users=None, group_ids=None):
         super().__init__({"extra": {"accounts": [{"name": "default", "ws_url": "ws://127.0.0.1:3000/ws", "allowed_users": allowed_users or ["12345"], "group_ids": group_ids or ["67890"], "admin_qq": admin_qq}]}})
         self.sent = []
+        self.reaction_actions = []
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append((chat_id, content, reply_to, metadata))
         return SimpleNamespace(success=True, message_id="approval-msg-1")
+
+    async def _send_action_conn(self, conn, action, params, timeout=30.0):
+        self.reaction_actions.append((action, params, timeout))
+        return {"retcode": 0, "data": {}}
 
 
 def test_admin_bypasses_message_allowlist_and_group_scope():
@@ -431,6 +436,24 @@ def test_core_approval_shortcut_respects_allowlist(monkeypatch):
     assert bot.sent == [("group_67890", "✓ 单次批准", None, None)]
 
 
+def test_group_approval_text_shortcut_bypasses_wake_requirement(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    data = {
+        "message_type": "group",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "user-msg-1",
+        "message": [{"type": "text", "data": {"text": "2"}}],
+    }
+
+    asyncio.run(bot._handle_message(data, bot._default_conn))
+
+    assert calls == [("session-key", "session")]
+    assert bot.sent == [("group_67890", "✓ 会话批准", None, None)]
+
+
 def test_admin_approval_bypasses_allowlist_and_group_scope(monkeypatch):
     calls = _install_fake_approval(monkeypatch)
     bot = _ApprovalBot(admin_qq="99999", allowed_users=["12345"], group_ids=["67890"])
@@ -470,7 +493,35 @@ def test_exec_approval_prompt_tracks_message_id_for_reaction():
     assert result.success is True
     assert bot._pending_approvals["group_67890"] == "session-key"
     assert bot._pending_approval_messages["group_67890"] == "approval-msg-1"
-    assert "贴表情=允许该会话" in bot.sent[0][1]
+    assert "点下方表情=允许该会话" in bot.sent[0][1]
+
+
+def test_exec_approval_prompt_mentions_originator_when_metadata_has_only_originator():
+    bot = _ApprovalBot()
+
+    asyncio.run(bot.send_exec_approval(
+        "group_67890",
+        "rm -rf /tmp/x",
+        "session-key",
+        metadata={"originator_user_id": "12345"},
+    ))
+
+    metadata = bot.sent[0][3]
+    assert metadata["originator_user_id"] == "12345"
+    assert metadata["mention_originator_user_id"] == "12345"
+    assert metadata["mention_reason"] == "approval_prompt"
+
+
+def test_exec_approval_prompt_adds_clickable_reaction_hint():
+    bot = _ApprovalBot()
+
+    asyncio.run(bot.send_exec_approval("group_67890", "rm -rf /tmp/x", "session-key"))
+
+    assert bot.reaction_actions == [(
+        "set_msg_emoji_like",
+        {"message_id": "approval-msg-1", "emoji_id": "66"},
+        10.0,
+    )]
 
 
 def test_group_reaction_approval_allows_session_on_prompt_message(monkeypatch):
@@ -551,3 +602,83 @@ def test_message_reactions_updated_is_recognized(monkeypatch):
     asyncio.run(bot._handle_notice(data, bot._default_conn))
 
     assert calls == [("session-key", "session")]
+
+
+def test_group_reaction_approval_accepts_nested_target_message_id(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "notify",
+        "sub_type": "emoji_like",
+        "group_id": 67890,
+        "operator_id": 12345,
+        "message": {"id": "approval-msg-1"},
+        "likes": [{"emoji_id": "66", "count": 1}],
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == [("session-key", "session")]
+    assert bot.sent == [("group_67890", "✓ 会话批准", None, None)]
+
+
+def test_group_msg_emoji_like_approval_allows_session(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "likes": [{"emoji_id": "66", "count": 1}],
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == [("session-key", "session")]
+    assert bot.sent == [("group_67890", "✓ 会话批准", None, None)]
+
+
+def test_group_msg_emoji_like_removal_does_not_approve(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "likes": [{"emoji_id": "66", "count": 0}],
+        "is_add": False,
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_reaction_approval_ignores_other_emoji(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "likes": [{"emoji_id": "123", "count": 1}],
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"

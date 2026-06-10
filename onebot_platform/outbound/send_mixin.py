@@ -143,7 +143,7 @@ class SendMixin:
             return False
         threshold = int(getattr(self, "_AUTO_FORWARD_TEXT_THRESHOLD", 3000) or 0)
         return msg_kind == "group" and threshold > 0 and len(content or "") > threshold
-    def _split_forward_text_nodes(self, content: str) -> List[Dict[str, Any]]:
+    def _split_forward_text_nodes(self, content: str, prefix_segments: Optional[List[dict]] = None) -> List[Dict[str, Any]]:
         chunk_size = max(200, int(getattr(self, "_AUTO_FORWARD_CHUNK_SIZE", 1800) or 1800))
         max_nodes = max(1, int(getattr(self, "_AUTO_FORWARD_MAX_NODES", 12) or 12))
         text = str(content or "")
@@ -152,18 +152,26 @@ class SendMixin:
             keep = max_nodes - 1
             chunks = chunks[:keep] + ["\n".join(chunks[keep:])]
         total = len(chunks)
-        return [
-            {
+        nodes = []
+        prefix = list(prefix_segments or [])
+        for idx, chunk in enumerate(chunks, start=1):
+            content_segments = [{"type": "text", "data": {"text": chunk}}]
+            if idx == 1 and prefix:
+                content_segments = [*prefix, *content_segments]
+            nodes.append({
                 "name": f"Hermes {idx}/{total}",
                 "user_id": "10000",
-                "segments": [{"type": "text", "data": {"text": chunk}}],
-            }
-            for idx, chunk in enumerate(chunks, start=1)
-        ]
-    async def _send_auto_forward_text_if_needed(self, chat_id: str, content: str, reply_to: Optional[str]) -> Optional[SendResult]:
+                "segments": content_segments,
+            })
+        return nodes
+    async def _send_auto_forward_text_if_needed(
+        self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[SendResult]:
         if not self._should_auto_forward_text(chat_id, content, reply_to):
             return None
-        result = await self.send_forward_message(chat_id, self._split_forward_text_nodes(content))
+        result = await self.send_forward_message(chat_id, self._split_forward_text_nodes(
+            content, self._mention_segments_for_metadata(chat_id, metadata)
+        ))
         if result.success:
             return result
         logger.debug("Auto forward send failed; falling back to normal text send: %s", result.error)
@@ -222,7 +230,7 @@ class SendMixin:
             content = self.format_message(content or "")
         if not content:
             return SendResult(success=True)
-        auto_forward = await self._send_auto_forward_text_if_needed(chat_id, content, reply_to)
+        auto_forward = await self._send_auto_forward_text_if_needed(chat_id, content, reply_to, metadata)
         if auto_forward is not None:
             return auto_forward
         message_segments = self._message_with_optional_reply(

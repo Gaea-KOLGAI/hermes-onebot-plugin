@@ -142,3 +142,22 @@ def test_send_long_group_text_falls_back_when_forward_fails():
     assert [action for action, _params, _timeout in bot.actions] == ["send_group_forward_msg", "send_group_msg"]
     fallback_message = bot.actions[1][1]["message"]
     assert fallback_message == [{"type": "text", "data": {"text": long_text}}]
+
+
+def test_auto_forward_long_group_text_preserves_metadata_mention():
+    class Bot(_InfoBot):
+        async def _send_action_conn(self, conn, action, params, timeout=30.0):
+            self.actions.append((action, params, timeout))
+            return {"retcode": 0, "data": {"forward_id": "fwd-mentioned"}}
+
+    bot = Bot()
+    long_text = "长文本" * 1800
+    result = asyncio.run(bot.send("group_67890", long_text, metadata={"mention_originator_user_id": "12345"}))
+
+    assert result.success is True
+    assert bot.actions[0][0] == "send_group_forward_msg"
+    first_content = bot.actions[0][1]["messages"][0]["data"]["content"]
+    assert first_content[:2] == [
+        {"type": "at", "data": {"qq": "12345"}},
+        {"type": "text", "data": {"text": " "}},
+    ]

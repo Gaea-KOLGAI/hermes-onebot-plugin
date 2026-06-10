@@ -62,27 +62,43 @@ def _notice_approval_candidate_chat_ids(self, data: dict, conn: _NapCatConnectio
 
 
 def _reaction_target_message_id(data: dict) -> str:
-    for key in ("target_message_id", "message_id", "msg_id", "source_msg_id", "message_seq"):
+    for key in (
+        "target_message_id", "message_id", "msg_id", "source_msg_id", "message_seq",
+        "target_msg_id", "target_id", "msg_seq", "seq",
+    ):
         value = data.get(key)
         if value not in (None, ""):
             return str(value)
     message = data.get("message")
     if isinstance(message, dict):
-        for key in ("message_id", "msg_id", "id", "seq"):
+        for key in ("message_id", "msg_id", "id", "seq", "message_seq", "msg_seq"):
             value = message.get(key)
             if value not in (None, ""):
                 return str(value)
+    for container_key in ("target", "source", "data"):
+        obj = data.get(container_key)
+        if isinstance(obj, dict):
+            for key in ("message_id", "msg_id", "id", "seq", "message_seq", "msg_seq"):
+                value = obj.get(key)
+                if value not in (None, ""):
+                    return str(value)
     return ""
 
 
 def _is_reaction_notice(notice_type: str, sub_type: str) -> bool:
-    return notice_type in {"group_reaction", "message_reaction", "message_reactions_updated", "reaction"} or (
-        notice_type == "notify" and sub_type in {"reaction", "emoji_like", "message_reaction", "group_reaction"}
+    return notice_type in {
+        "group_reaction", "message_reaction", "message_reactions_updated", "reaction",
+        "group_msg_emoji_like",
+    } or (
+        notice_type == "notify" and sub_type in {"reaction", "emoji_like", "message_reaction", "group_reaction", "group_msg_emoji_like"}
     )
 
 
 def _is_reaction_add_notice(data: dict) -> bool:
     """Return False only when the reaction notice explicitly describes removal."""
+    is_add = data.get("is_add")
+    if is_add is False or str(is_add).strip().lower() in {"false", "0", "no"}:
+        return False
     for key in ("action", "operation", "event_type", "reaction_type", "sub_type"):
         value = data.get(key)
         if value is None:
@@ -91,6 +107,31 @@ def _is_reaction_add_notice(data: dict) -> bool:
         if text in {"remove", "removed", "delete", "deleted", "cancel", "cancelled", "unset", "unlike"}:
             return False
     return True
+
+
+def _reaction_has_approval_emoji(data: dict, approval_emoji_id: str = "66") -> bool:
+    def _matches(obj) -> bool:
+        if not isinstance(obj, dict):
+            return False
+        emoji = obj.get("emoji_id") or obj.get("emojiId") or obj.get("qface_id") or obj.get("face_id") or obj.get("id")
+        if str(emoji) != str(approval_emoji_id):
+            return False
+        count = obj.get("count")
+        if count is not None:
+            try:
+                return int(count) > 0
+            except (TypeError, ValueError):
+                return str(count).strip().lower() not in {"", "0", "false", "no"}
+        return True
+    if _matches(data):
+        return True
+    for key in ("likes", "current_reactions", "reactions", "reaction", "emoji_like"):
+        value = data.get(key)
+        if isinstance(value, list) and any(_matches(item) for item in value):
+            return True
+        if _matches(value):
+            return True
+    return False
 
 
 async def _resolve_notice_approval(self, data: dict, conn: _NapCatConnection, actor_id: str, choice: str, *, target_message_id: str = "") -> bool:
@@ -124,8 +165,12 @@ async def handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
     if _is_reaction_notice(notice_type, sub_type):
         actor_id = str(data.get("user_id") or data.get("operator_id") or "")
         target_message_id = _reaction_target_message_id(data)
-        if _is_reaction_add_notice(data) and actor_id and target_message_id and await _resolve_notice_approval(
-            self, data, conn, actor_id, "2", target_message_id=target_message_id
+        if (
+            _is_reaction_add_notice(data)
+            and _reaction_has_approval_emoji(data)
+            and actor_id
+            and target_message_id
+            and await _resolve_notice_approval(self, data, conn, actor_id, "2", target_message_id=target_message_id)
         ):
             return
         return

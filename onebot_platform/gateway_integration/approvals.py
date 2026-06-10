@@ -16,6 +16,19 @@ _UPDATE_CHOICES = {
     "1": "y", "y": "y", "yes": "y", "是": "y", "确认": "y",
     "2": "n", "n": "n", "no": "n", "否": "n", "取消": "n",
 }
+_APPROVAL_REACTION_EMOJI_ID = "66"
+
+
+def _approval_notify_metadata(chat_id: str, metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    notify_metadata = dict(metadata or {})
+    msg_type, _target_id = _parse_chat_id(chat_id)
+    originator = str(notify_metadata.get("originator_user_id") or "").strip()
+    if msg_type == "group" and originator and originator.isdigit():
+        notify_metadata.setdefault("mention_originator_user_id", originator)
+        notify_metadata.setdefault("mention_reason", "approval_prompt")
+    return notify_metadata or None
+
+
 class ApprovalMixin:
     async def send_exec_approval(
         self,
@@ -36,17 +49,27 @@ class ApprovalMixin:
             f"命令: {cmd_preview}\n"
             f"原因: {description}\n"
             f"戳一戳我批准一次\n"
-            f"给这条审批消息贴表情=允许该会话\n"
+            f"点下方表情=允许该会话\n"
             f"回复1 单次批准\n"
             f"回复2 会话批准\n"
             f"回复3 永久批准\n"
             f"回复4 拒绝"
         )
         reply_to = self._last_msg_id.get(chat_id)
-        result = await self.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
+        approval_metadata = _approval_notify_metadata(chat_id, metadata)
+        result = await self.send(chat_id, msg, reply_to=reply_to, metadata=approval_metadata)
         approval_msg_id = str(getattr(result, "message_id", "") or "")
         if approval_msg_id:
             self._pending_approval_messages[chat_id] = approval_msg_id
+            try:
+                await self._send_action_conn(
+                    self._get_conn_for_chat(chat_id),
+                    "set_msg_emoji_like",
+                    {"message_id": int(approval_msg_id) if approval_msg_id.isdigit() else approval_msg_id, "emoji_id": _APPROVAL_REACTION_EMOJI_ID},
+                    timeout=10.0,
+                )
+            except Exception as e:
+                logger.debug("Failed to add approval reaction hint to %s: %s", approval_msg_id, e)
         else:
             self._pending_approval_messages.pop(chat_id, None)
         return result
