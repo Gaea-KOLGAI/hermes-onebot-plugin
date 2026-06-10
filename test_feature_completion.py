@@ -10,7 +10,11 @@ from onebot_platform.transport import lifecycle as transport_lifecycle
 
 class _InfoBot(OneBotAdapter):
     def __init__(self):
-        super().__init__({"extra": {"ws_url": "ws://127.0.0.1:3000/ws", "http_api_url": "http://127.0.0.1:3001", "allowed_users": ["12345"]}})
+        settings = SimpleNamespace(data={}, get_chat=lambda chat_id: {})
+        super().__init__(
+            {"extra": {"ws_url": "ws://127.0.0.1:3000/ws", "http_api_url": "http://127.0.0.1:3001", "allowed_users": ["12345"]}},
+            settings=settings,
+        )
         self.actions = []
 
     async def _send_action_conn(self, conn, action, params, timeout=15.0):
@@ -97,3 +101,44 @@ def test_send_forward_message_accepts_natural_node_fields():
     assert node["nickname"] == "小明"
     assert node["user_id"] == 10001
     assert node["content"] == [{"type": "text", "data": {"text": "你好"}}]
+
+
+def test_send_uses_forward_message_for_long_group_text():
+    class Bot(_InfoBot):
+        async def _send_action_conn(self, conn, action, params, timeout=30.0):
+            self.actions.append((action, params, timeout))
+            return {"retcode": 0, "data": {"forward_id": "fwd-long"}}
+
+    bot = Bot()
+    long_text = "第一段\n" + ("长文本" * 1800) + "\n最后一段"
+    result = asyncio.run(bot.send("group_67890", long_text))
+
+    assert result.success is True
+    assert result.message_id == "fwd-long"
+    assert bot.actions[0][0] == "send_group_forward_msg"
+    params = bot.actions[0][1]
+    assert params["group_id"] == 67890
+    assert len(params["messages"]) >= 2
+    assert all(node["type"] == "node" for node in params["messages"])
+    joined = "".join(seg["data"]["text"] for node in params["messages"] for seg in node["data"]["content"])
+    assert "第一段" in joined
+    assert "最后一段" in joined
+
+
+def test_send_long_group_text_falls_back_when_forward_fails():
+    class Bot(_InfoBot):
+        async def _send_action_conn(self, conn, action, params, timeout=30.0):
+            self.actions.append((action, params, timeout))
+            if action == "send_group_forward_msg":
+                return {"retcode": 1404, "msg": "unknown action"}
+            return {"retcode": 0, "data": {"message_id": 99}}
+
+    bot = Bot()
+    long_text = "长文本" * 1800
+    result = asyncio.run(bot.send("group_67890", long_text))
+
+    assert result.success is True
+    assert result.message_id == "99"
+    assert [action for action, _params, _timeout in bot.actions] == ["send_group_forward_msg", "send_group_msg"]
+    fallback_message = bot.actions[1][1]["message"]
+    assert fallback_message == [{"type": "text", "data": {"text": long_text}}]

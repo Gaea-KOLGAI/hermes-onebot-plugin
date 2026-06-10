@@ -7,6 +7,10 @@ from onebot_platform.outbound import media as _media
 from onebot_platform.outbound import notices as _notices
 
 class SendMixin:
+    _AUTO_FORWARD_TEXT_THRESHOLD = 3000
+    _AUTO_FORWARD_CHUNK_SIZE = 1800
+    _AUTO_FORWARD_MAX_NODES = 12
+
     @staticmethod
     def _cleanup_echo(conn: _NapCatConnection, echo: str):
         conn.echo_futures.pop(echo, None)
@@ -130,6 +134,40 @@ class SendMixin:
         if segments and segments[0].get("type") == "at" and str(segments[0].get("data", {}).get("qq", "")) == mention[0]["data"]["qq"]:
             return list(segments)
         return [*mention, *segments]
+    def _should_auto_forward_text(self, chat_id: str, content: str, reply_to: Optional[str]) -> bool:
+        if reply_to:
+            return False
+        try:
+            msg_kind, _target_id = _parse_chat_id(chat_id)
+        except Exception:
+            return False
+        threshold = int(getattr(self, "_AUTO_FORWARD_TEXT_THRESHOLD", 3000) or 0)
+        return msg_kind == "group" and threshold > 0 and len(content or "") > threshold
+    def _split_forward_text_nodes(self, content: str) -> List[Dict[str, Any]]:
+        chunk_size = max(200, int(getattr(self, "_AUTO_FORWARD_CHUNK_SIZE", 1800) or 1800))
+        max_nodes = max(1, int(getattr(self, "_AUTO_FORWARD_MAX_NODES", 12) or 12))
+        text = str(content or "")
+        chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
+        if len(chunks) > max_nodes:
+            keep = max_nodes - 1
+            chunks = chunks[:keep] + ["\n".join(chunks[keep:])]
+        total = len(chunks)
+        return [
+            {
+                "name": f"Hermes {idx}/{total}",
+                "user_id": "10000",
+                "segments": [{"type": "text", "data": {"text": chunk}}],
+            }
+            for idx, chunk in enumerate(chunks, start=1)
+        ]
+    async def _send_auto_forward_text_if_needed(self, chat_id: str, content: str, reply_to: Optional[str]) -> Optional[SendResult]:
+        if not self._should_auto_forward_text(chat_id, content, reply_to):
+            return None
+        result = await self.send_forward_message(chat_id, self._split_forward_text_nodes(content))
+        if result.success:
+            return result
+        logger.debug("Auto forward send failed; falling back to normal text send: %s", result.error)
+        return None
     async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 15.0) -> dict:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
@@ -184,6 +222,9 @@ class SendMixin:
             content = self.format_message(content or "")
         if not content:
             return SendResult(success=True)
+        auto_forward = await self._send_auto_forward_text_if_needed(chat_id, content, reply_to)
+        if auto_forward is not None:
+            return auto_forward
         message_segments = self._message_with_optional_reply(
             chat_id, reply_to, *self._with_metadata_mention(chat_id, metadata, {"type": "text", "data": {"text": content}})
         )
