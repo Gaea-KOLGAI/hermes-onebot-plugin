@@ -6,10 +6,12 @@ from pathlib import Path
 
 import adapter
 import onebot_platform.adapter as adapter_impl
+import onebot_platform.outbound.notices as notices_impl
 import onebot_platform.outbound.results as results_impl
 import onebot_platform.config.core as config_core
 from adapter import OneBotAdapter, _MediaCache
 from onebot_platform.state.core import DedupCache, RateLimiter, MemberCache
+from onebot_platform.state.settings import _PluginSettings
 
 
 class _CaptureBot(OneBotAdapter):
@@ -241,6 +243,35 @@ def test_send_document_ignores_trusted_local_file_metadata_for_unsafe_paths():
     assert bot.calls == []
 
 
+def test_group_send_does_not_mention_for_originator_metadata_only():
+    bot = _CaptureBot()
+    bot._plugin_settings = _PluginSettings(Path(os.environ.get("TMPDIR", "/tmp")) / "onebot-normal-mention-test.json")
+    result = asyncio.run(bot.send(
+        "group_67890",
+        "普通回复",
+        metadata={"originator_user_id": "12345"},
+    ))
+    assert result.success is True
+    message = bot.calls[-1][1]["message"]
+    assert not any(seg.get("type") == "at" for seg in message)
+    assert message[0] == {"type": "text", "data": {"text": "普通回复"}}
+
+
+def test_group_send_mentions_only_for_explicit_notify_metadata():
+    bot = _CaptureBot()
+    bot._plugin_settings = _PluginSettings(Path(os.environ.get("TMPDIR", "/tmp")) / "onebot-explicit-mention-test.json")
+    result = asyncio.run(bot.send(
+        "group_67890",
+        "审批提醒",
+        metadata={"originator_user_id": "12345", "mention_originator_user_id": "12345"},
+    ))
+    assert result.success is True
+    message = bot.calls[-1][1]["message"]
+    assert message[0] == {"type": "at", "data": {"qq": "12345"}}
+    assert message[1] == {"type": "text", "data": {"text": " "}}
+    assert message[2] == {"type": "text", "data": {"text": "审批提醒"}}
+
+
 def test_send_action_uses_http_fallback_when_ws_send_raises(monkeypatch):
     bot = OneBotAdapter({"extra": {"ws_url": "ws://127.0.0.1:3000/ws", "http_api_url": "http://127.0.0.1:3001"}})
     conn = bot._default_conn
@@ -324,3 +355,199 @@ def test_post_onebot_http_rejects_oversized_response_body(monkeypatch):
     result = results_impl._post_onebot_http("http://127.0.0.1:3001", "", "send_private_msg", {})
     assert result["success"] is False
     assert "exceeds" in result["error"]
+
+
+def _install_fake_approval(monkeypatch):
+    import sys
+    import types
+
+    import onebot_platform.gateway_integration.approvals as approvals_impl
+    calls = []
+    approval_mod = types.SimpleNamespace(
+        has_blocking_approval=lambda session_key: True,
+        resolve_gateway_approval=lambda session_key, choice: calls.append((session_key, choice)),
+    )
+    tools_mod = types.SimpleNamespace(approval=approval_mod)
+    monkeypatch.setitem(sys.modules, "tools", tools_mod)
+    monkeypatch.setitem(sys.modules, "tools.approval", approval_mod)
+    monkeypatch.setattr(approvals_impl, "_HAS_APPROVAL", True)
+    monkeypatch.setattr(notices_impl, "_HAS_APPROVAL", True)
+    return calls
+
+
+class _ApprovalBot(_CaptureBot):
+    def __init__(self, *, admin_qq="12345", allowed_users=None, group_ids=None):
+        super().__init__({"extra": {"accounts": [{"name": "default", "ws_url": "ws://127.0.0.1:3000/ws", "allowed_users": allowed_users or ["12345"], "group_ids": group_ids or ["67890"], "admin_qq": admin_qq}]}})
+        self.sent = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append((chat_id, content, reply_to, metadata))
+        return SimpleNamespace(success=True, message_id="approval-msg-1")
+
+
+def test_admin_bypasses_message_allowlist_and_group_scope():
+    bot = _ApprovalBot(admin_qq="99999", allowed_users=["12345"], group_ids=["67890"])
+    allowed = asyncio.run(bot._check_authorization_async(
+        "99999", "group", {"message_type": "group", "group_id": 11111, "user_id": 99999}, bot._default_conn
+    ))
+    normal = asyncio.run(bot._check_authorization_async(
+        "88888", "group", {"message_type": "group", "group_id": 11111, "user_id": 88888}, bot._default_conn
+    ))
+    assert allowed is True
+    assert normal is False
+
+
+def test_group_poke_approval_respects_allowlist(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    data = {
+        "notice_type": "notify",
+        "sub_type": "poke",
+        "group_id": 67890,
+        "user_id": 99999,
+        "target_id": 11111,
+        "self_id": 11111,
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_core_approval_shortcut_respects_allowlist(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+
+    blocked = asyncio.run(bot._resolve_approval_shortcut("group_67890", "1", "99999", "12345"))
+    allowed = asyncio.run(bot._resolve_approval_shortcut("group_67890", "1", "12345", "12345"))
+
+    assert blocked is False
+    assert allowed is True
+    assert calls == [("session-key", "once")]
+    assert bot.sent == [("group_67890", "✓ 单次批准", None, None)]
+
+
+def test_admin_approval_bypasses_allowlist_and_group_scope(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot(admin_qq="99999", allowed_users=["12345"], group_ids=["67890"])
+    bot._pending_approvals["group_11111"] = "session-key"
+
+    allowed = asyncio.run(bot._resolve_approval_shortcut("group_11111", "1", "99999", "99999"))
+
+    assert allowed is True
+    assert calls == [("session-key", "once")]
+    assert bot.sent == [("group_11111", "✓ 单次批准", None, None)]
+
+
+def test_group_poke_approval_allows_whitelisted_user(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    data = {
+        "notice_type": "notify",
+        "sub_type": "poke",
+        "group_id": 67890,
+        "user_id": 12345,
+        "target_id": 11111,
+        "self_id": 11111,
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == [("session-key", "once")]
+    assert bot.sent == [("group_67890", "✓ 单次批准", None, None)]
+
+
+def test_exec_approval_prompt_tracks_message_id_for_reaction():
+    bot = _ApprovalBot()
+
+    result = asyncio.run(bot.send_exec_approval("group_67890", "rm -rf /tmp/x", "session-key"))
+
+    assert result.success is True
+    assert bot._pending_approvals["group_67890"] == "session-key"
+    assert bot._pending_approval_messages["group_67890"] == "approval-msg-1"
+    assert "贴表情=允许该会话" in bot.sent[0][1]
+
+
+def test_group_reaction_approval_allows_session_on_prompt_message(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_reaction",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "qface_id": "66",
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == [("session-key", "session")]
+    assert bot.sent == [("group_67890", "✓ 会话批准", None, None)]
+    assert "group_67890" not in bot._pending_approvals
+    assert "group_67890" not in bot._pending_approval_messages
+
+
+def test_group_reaction_approval_ignores_other_message(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_reaction",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "normal-msg-9",
+        "qface_id": "66",
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_group_reaction_removal_does_not_approve(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "group_reaction",
+        "sub_type": "remove",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "qface_id": "66",
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == []
+    assert bot.sent == []
+    assert bot._pending_approvals["group_67890"] == "session-key"
+
+
+def test_message_reactions_updated_is_recognized(monkeypatch):
+    calls = _install_fake_approval(monkeypatch)
+    bot = _ApprovalBot()
+    bot._pending_approvals["group_67890"] = "session-key"
+    bot._pending_approval_messages["group_67890"] = "approval-msg-1"
+    data = {
+        "notice_type": "message_reactions_updated",
+        "group_id": 67890,
+        "user_id": 12345,
+        "message_id": "approval-msg-1",
+        "current_reactions": [{"emoji_id": "66", "count": 1}],
+    }
+
+    asyncio.run(bot._handle_notice(data, bot._default_conn))
+
+    assert calls == [("session-key", "session")]

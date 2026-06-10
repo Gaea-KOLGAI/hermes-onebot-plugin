@@ -66,6 +66,9 @@ class MessageMixin:
             return True
         return False
     async def _check_authorization_async(self, user_id: str, msg_type: str, data: dict, conn) -> bool:
+        admin_qq = (getattr(conn, "admin_qq", "") or os.getenv("ONEBOT_ADMIN_QQ", "")).strip()
+        if admin_qq and str(user_id) == str(admin_qq):
+            return True
         if conn.is_user_authorized(user_id, msg_type, data):
             return True
         if msg_type == "private":
@@ -143,6 +146,7 @@ class MessageMixin:
             for k in stale:
                 self._pending_approvals.pop(k, None)
                 self._pending_approval_admin.pop(k, None)
+                self._pending_approval_messages.pop(k, None)
         if len(self._approval_locks) > 100:
             active_approvals = set(self._pending_approvals)
             self._approval_locks = {k: v for k, v in self._approval_locks.items() if k in active_approvals}

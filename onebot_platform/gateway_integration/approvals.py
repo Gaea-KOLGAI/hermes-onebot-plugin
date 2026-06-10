@@ -36,6 +36,7 @@ class ApprovalMixin:
             f"命令: {cmd_preview}\n"
             f"原因: {description}\n"
             f"戳一戳我批准一次\n"
+            f"给这条审批消息贴表情=允许该会话\n"
             f"回复1 单次批准\n"
             f"回复2 会话批准\n"
             f"回复3 永久批准\n"
@@ -43,6 +44,11 @@ class ApprovalMixin:
         )
         reply_to = self._last_msg_id.get(chat_id)
         result = await self.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
+        approval_msg_id = str(getattr(result, "message_id", "") or "")
+        if approval_msg_id:
+            self._pending_approval_messages[chat_id] = approval_msg_id
+        else:
+            self._pending_approval_messages.pop(chat_id, None)
         return result
     async def send_update_prompt(
         self,
@@ -77,9 +83,20 @@ class ApprovalMixin:
                 if not has_blocking_approval(session_key):
                     self._pending_approvals.pop(chat_id, None)
                     self._pending_approval_admin.pop(chat_id, None)
+                    self._pending_approval_messages.pop(chat_id, None)
                     return False
             except ImportError:
                 pass
+            if user_id:
+                msg_type, target_id = _parse_chat_id(chat_id)
+                auth_data = {"message_type": msg_type, "user_id": str(user_id)}
+                if msg_type == "group":
+                    auth_data["group_id"] = target_id
+                conn = self._get_conn_for_chat(chat_id)
+                effective_admin_qq = str(admin_qq or getattr(conn, "admin_qq", "") or os.getenv("ONEBOT_ADMIN_QQ", "")).strip()
+                if not effective_admin_qq or str(user_id) != effective_admin_qq:
+                    if not conn.is_user_authorized(str(user_id), msg_type, auth_data):
+                        return False
             if is_admin_approval:
                 if not admin_qq:
                     logger.warning("approval admin is not configured; rejecting admin_only shortcut for %s", chat_id)
@@ -99,6 +116,7 @@ class ApprovalMixin:
                 return False
             self._pending_approvals.pop(chat_id, None)
             self._pending_approval_admin.pop(chat_id, None)
+            self._pending_approval_messages.pop(chat_id, None)
         choice_text = {
             "once": "单次批准",
             "session": "会话批准",

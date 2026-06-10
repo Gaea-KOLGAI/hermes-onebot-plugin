@@ -88,7 +88,7 @@ class OneBotAdapter(SettingsMixin, ConnectionMixin, MessageMixin, CommandMixin, 
         self._settings_lock = asyncio.Lock()
         for attr in (
             "_chat_msg_seq", "_msg_receive_seq", "_last_msg_id",
-            "_pending_approvals", "_pending_approval_admin", "_approval_locks",
+            "_pending_approvals", "_pending_approval_admin", "_pending_approval_messages", "_approval_locks",
             "_pending_update_chats", "_last_progress_msg", "_in_edit_resend_count",
             "_active_input_status", "_active_tasks", "_reject_notified",
             "_recent_outbound_media",

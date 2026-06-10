@@ -970,7 +970,7 @@ try:
         assert private_msg[0]["type"] == "text"
         assert not any(seg.get("type") == "at" for seg in private_msg)
     asyncio.run(_exercise_originator_mentions())
-    ok("群聊最终回复按 metadata 自动 @ 发起人，私聊不 @")
+    ok("显式 mention metadata 才 @ 群聊发起人，私聊不 @")
 except Exception as e:
     fail("originator mention", str(e))
 
