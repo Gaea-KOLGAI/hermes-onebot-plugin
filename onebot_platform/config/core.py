@@ -103,7 +103,8 @@ def build_runtime_paths() -> tuple[Path, Path, tuple[Path, Path]]:
         if os.getenv("ONEBOT_MEDIA_CACHE_DIR", "").strip()
         else (Path("/var/lib/napcat/hermes-media-cache") if Path("/var/lib/napcat").exists() else data_dir / "media_cache")
     )
-    outbound_roots = (media_cache_dir, Path(tempfile.gettempdir()))
+    napcat_send_dir = Path("/var/lib/napcat/hermes-send")
+    outbound_roots = (media_cache_dir, Path(tempfile.gettempdir()), napcat_send_dir)
     return data_dir, media_cache_dir, outbound_roots
 
 

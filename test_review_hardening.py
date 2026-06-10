@@ -252,6 +252,29 @@ def test_apply_yaml_config_core_tolerates_non_dict_extra(monkeypatch):
     assert "ONEBOT_WS_URL" not in os.environ
 
 
+def test_runtime_paths_allow_napcat_send_directory():
+    _data_dir, _media_cache_dir, outbound_roots = config_core.build_runtime_paths()
+    assert Path("/var/lib/napcat/hermes-send") in outbound_roots
+
+
+def test_send_document_accepts_file_from_napcat_send_dir(tmp_path):
+    send_dir = Path("/var/lib/napcat/hermes-send")
+    if not send_dir.exists():
+        send_dir = tmp_path
+    send_dir.mkdir(parents=True, exist_ok=True)
+    media = send_dir / "adapter-safe-upload.txt"
+    media.write_text("ok", encoding="utf-8")
+    bot = _CaptureBot(media_cache=_MediaCache(send_dir))
+
+    result = asyncio.run(bot.send_document("group_67890", str(media), file_name=media.name))
+
+    assert result.success is True
+    assert result.message_id == "123"
+    assert bot.calls[0][0] == "upload_group_file"
+    assert bot.calls[0][1]["group_id"] == 67890
+    assert bot.calls[0][1]["name"] == "adapter-safe-upload.txt"
+
+
 def test_send_document_rejects_bool_target_id():
     bot = _CaptureBot()
     result = asyncio.run(bot.send_document("private_True", "https://example.com/a.txt"))
