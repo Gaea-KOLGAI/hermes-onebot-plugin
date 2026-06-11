@@ -113,6 +113,44 @@ def test_adapter_init_all_malformed_accounts_falls_back_to_default(monkeypatch):
     assert bot._default_conn.ws_url == "ws://fallback/ws"
 
 
+def test_command_config_lazy_loads_settings_before_connect(tmp_path):
+    async def run():
+        bot = _CaptureBot(settings_path=tmp_path / "settings.json")
+        assert bot._settings_loaded is False
+        handled = await bot._try_handle_command(
+            {"message_type": "private", "user_id": 12345, "message_id": 1},
+            bot._default_conn,
+            "/onebot config",
+            "private",
+            "12345",
+            "12345",
+        )
+        assert handled is True
+        assert bot._settings_loaded is True
+        assert bot.calls
+        assert "OneBot当前配置" in bot.calls[-1][1]["message"][0]["data"]["text"]
+    asyncio.run(run())
+
+
+def test_command_mutation_lazy_loads_settings_before_connect(tmp_path):
+    async def run():
+        bot = _CaptureBot(settings_path=tmp_path / "settings.json")
+        assert bot._settings_loaded is False
+        handled = await bot._try_handle_command(
+            {"message_type": "private", "user_id": 12345, "message_id": 2},
+            bot._default_conn,
+            "/setmd off",
+            "private",
+            "12345",
+            "12345",
+        )
+        assert handled is True
+        assert bot._settings_loaded is True
+        assert bot._plugin_settings.get_chat("private_12345")["strip_markdown"] is False
+        assert (tmp_path / "settings.json").exists()
+    asyncio.run(run())
+
+
 def test_plugin_multi_account_detection_ignores_malformed_accounts(monkeypatch, tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("gateway:\n  platforms:\n    onebot:\n      extra:\n        accounts:\n          - bad\n          - name: ok\n            ws_url: ws://127.0.0.1:3000/ws\n", encoding="utf-8")

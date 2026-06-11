@@ -1,7 +1,7 @@
 name: onebot-platform
 label: OneBot (NapCat)
 kind: platform
-version: 2.2.2
+version: 2.2.3
 description: >
   OneBot v11 gateway adapter for Hermes Agent with multi-account support.
   Connects to NapCat (or any OneBot v11 implementation) via WebSocket

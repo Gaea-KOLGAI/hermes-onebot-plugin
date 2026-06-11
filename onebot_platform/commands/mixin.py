@@ -38,6 +38,7 @@ class CommandMixin:
         if cmd_def.group_only and msg_type != "group":
             await self._send_reply_async_conn(conn, data, "✗ 此命令只能在群聊中使用")
             return True
+        await self._ensure_settings_loaded()
         await cmd_def.handler(conn, data, cmd_args, user_id, admin_qq)
         return True
     async def _cmd_onebot(self, conn, data, args, user_id, admin_qq):
