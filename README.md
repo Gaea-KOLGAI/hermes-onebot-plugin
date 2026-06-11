@@ -305,9 +305,9 @@ tail -100 ~/.hermes/logs/gateway.log
 在插件目录运行：
 
 ```bash
-PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 -m compileall -q adapter.py __init__.py onebot_platform
-PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 -m pytest -q test_feature_completion.py test_review_hardening.py test_optimizations.py
-PYTHONPATH=/root/.local/share/pipx/venvs/hermes-agent/lib/python3.12/site-packages:$PWD python3 test_full_chain.py
+PYTHONPATH=<hermes-venv>/lib/python3.12/site-packages:$PWD python3 -m compileall -q adapter.py __init__.py onebot_platform
+PYTHONPATH=<hermes-venv>/lib/python3.12/site-packages:$PWD python3 -m pytest -q test_feature_completion.py test_review_hardening.py test_optimizations.py
+PYTHONPATH=<hermes-venv>/lib/python3.12/site-packages:$PWD python3 test_full_chain.py
 ```
 
 当前全链路测试覆盖：

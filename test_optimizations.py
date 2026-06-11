@@ -118,8 +118,8 @@ def test_group_upload_notice_is_passive_and_does_not_dispatch():
     bot = PassiveUploadAdapter()
     data = {
         "notice_type": "group_upload",
-        "group_id": 1103659691,
-        "user_id": 257155386,
+        "group_id": 1000000001,
+        "user_id": 100000001,
         "file": {"name": "Hermes.Studio-0.6.10-x64.exe", "size": 146393250},
     }
     asyncio.run(bot._handle_notice(data, bot._default_conn))

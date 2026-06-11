@@ -298,11 +298,11 @@ def test_apply_yaml_config_core_tolerates_non_dict_extra(monkeypatch):
 
 def test_runtime_paths_allow_napcat_send_directory():
     _data_dir, _media_cache_dir, outbound_roots = config_core.build_runtime_paths()
-    assert Path("/var/lib/napcat/hermes-send") in outbound_roots
+    assert Path("<napcat-data-dir>/hermes-send") in outbound_roots
 
 
 def test_send_document_accepts_file_from_napcat_send_dir(tmp_path):
-    send_dir = Path("/var/lib/napcat/hermes-send")
+    send_dir = Path("<napcat-data-dir>/hermes-send")
     if not send_dir.exists():
         send_dir = tmp_path
     send_dir.mkdir(parents=True, exist_ok=True)

@@ -20,7 +20,7 @@ def test_build_connections_keeps_adapter_connection_semantics(monkeypatch):
                 "allowed_users": [123, "456"],
                 "group_ids": [789],
                 "allow_all": False,
-                "admin_qq": "257155386",
+                "admin_qq": "100000001",
                 "http_api_url": "http://127.0.0.1:3000",
             }
         ]
@@ -31,7 +31,7 @@ def test_build_connections_keeps_adapter_connection_semantics(monkeypatch):
     assert default_conn is connections["main"]
     assert default_conn.allowed_users == ["123", "456"]
     assert default_conn.group_ids == ["789"]
-    assert default_conn.admin_qq == "257155386"
+    assert default_conn.admin_qq == "100000001"
     assert default_conn.http_api_url == "http://127.0.0.1:3000"
 
 
