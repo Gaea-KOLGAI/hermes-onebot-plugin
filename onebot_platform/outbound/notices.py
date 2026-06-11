@@ -180,8 +180,8 @@ async def handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
         self_id = data.get("self_id", "")
         if str(target_id) != str(self_id):
             return
-        if data.get("group_id"):
-            return
         if await _resolve_notice_approval(self, data, conn, poker_id, "1"):
+            return
+        if data.get("group_id"):
             return
         await dispatch_notice_text(self, data, conn, f"[戳一戳: {poker_id}]")

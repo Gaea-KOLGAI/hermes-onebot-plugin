@@ -562,7 +562,7 @@ def test_admin_approval_bypasses_allowlist_and_group_scope(monkeypatch):
     assert bot.sent == [("group_11111", "✓ 单次批准", None, None)]
 
 
-def test_group_poke_approval_does_not_resolve_group_pending(monkeypatch):
+def test_group_poke_approval_resolves_once_for_authorized_user(monkeypatch):
     calls = _install_fake_approval(monkeypatch)
     bot = _ApprovalBot()
     bot._pending_approvals["group_67890"] = "session-key"
@@ -577,9 +577,9 @@ def test_group_poke_approval_does_not_resolve_group_pending(monkeypatch):
 
     asyncio.run(bot._handle_notice(data, bot._default_conn))
 
-    assert calls == []
-    assert bot.sent == []
-    assert bot._pending_approvals["group_67890"] == "session-key"
+    assert calls == [("session-key", "once")]
+    assert bot.sent == [("group_67890", "✓ 单次批准", None, None)]
+    assert "group_67890" not in bot._pending_approvals
 
 
 def test_exec_approval_prompt_tracks_message_id_for_reaction():
@@ -781,7 +781,9 @@ def test_reaction_approval_ignores_other_emoji(monkeypatch):
     assert bot._pending_approvals["group_67890"] == "session-key"
 
 
-def test_allow_all_still_respects_group_scope():
+def test_allow_all_still_respects_group_scope(monkeypatch):
+    monkeypatch.delenv("ONEBOT_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("ONEBOT_ALLOWED_USERS", raising=False)
     bot = OneBotAdapter({"extra": {
         "ws_url": "ws://127.0.0.1:3000/ws",
         "allow_all": True,
@@ -862,7 +864,7 @@ def test_multi_account_init_skips_invalid_ws_url_and_keeps_valid_account():
     assert bot._default_conn.ws_url == "ws://127.0.0.1:3001/ws"
 
 
-def test_reverse_ws_public_listener_without_token_is_rejected(monkeypatch):
+def test_reverse_ws_public_listener_without_token_starts_and_filters_clients(monkeypatch):
     calls = []
 
     async def fake_serve(*args, **kwargs):
@@ -878,9 +880,32 @@ def test_reverse_ws_public_listener_without_token_is_rejected(monkeypatch):
 
     result = asyncio.run(bot._connect_reverse_conn(bot._default_conn))
 
-    assert result is False
-    assert calls == []
-    assert bot._default_conn.ws_server is None
+    assert result is True
+    assert calls
+    assert calls[0][1]["ping_interval"] == 30
+    assert bot._default_conn.ws_server is not None
+
+
+def test_reverse_ws_without_token_rejects_non_loopback_peer():
+    class FakeWebSocket:
+        remote_address = ("203.0.113.7", 50000)
+
+        def __init__(self):
+            self.close_calls = []
+
+        async def close(self, code, reason):
+            self.close_calls.append((code, reason))
+
+    bot = OneBotAdapter({"extra": {
+        "ws_url": "ws://0.0.0.0:18082/ws",
+        "ws_mode": "reverse",
+    }})
+    ws = FakeWebSocket()
+
+    asyncio.run(bot._handle_reverse_ws_client(bot._default_conn, ws))
+
+    assert ws.close_calls == [(4001, "Unauthorized")]
+    assert bot._default_conn.ws is None
 
 
 def test_unknown_group_slash_still_requires_wake_at():
