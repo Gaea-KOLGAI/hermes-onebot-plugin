@@ -27,6 +27,10 @@ class SendMixin:
     async def _send_action_conn(self, conn: _NapCatConnection, action: str, params: dict, timeout: float = 15.0) -> dict:
         if action in self._unsupported_actions:
             return {"status": "failed", "retcode": 1, "msg": f"action '{action}' not supported by this NapCat version"}
+        # Prefer HTTP API for sends when configured. In reverse-WS mode NapCat can
+        # deliver the message but fail to return the echo before Hermes times out.
+        if conn.http_api_url:
+            return await self._http_call_conn(conn, action, params, timeout=timeout)
         ws = conn.ws
         if (not ws or getattr(ws, "close_code", None) is not None) and conn.ws_mode == "reverse":
             ws = await self._wait_for_ready_ws_conn(conn)
@@ -177,7 +181,7 @@ class SendMixin:
             return result
         logger.debug("Auto forward send failed; falling back to normal text send: %s", result.error)
         return None
-    async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 15.0) -> dict:
+    async def _send_chat_segments(self, chat_id: str, segments: List[dict], timeout: float = 5.0) -> dict:
         try:
             conn = self._get_conn_for_chat(chat_id)
             msg_kind, target_id = _parse_chat_id(chat_id)
@@ -185,6 +189,33 @@ class SendMixin:
         except (ValueError, TypeError) as e:
             return {"status": "failed", "retcode": -1, "msg": str(e)}
         return await self._send_action_conn(conn, action, params, timeout=timeout)
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 0,
+        base_delay: float = 0.0,
+    ) -> SendResult:
+        """OneBot/NapCat can deliver a message but never return sendMsg ack.
+
+        The gateway base retry loop is bad for this transport: each retry can
+        block on NapCat's sendMsg timeout, and shutdown notifications then hold
+        gateway drain until systemd has to SIGKILL the whole service. Fail fast
+        instead; the next inbound message or the platform itself is the health
+        signal.
+        """
+        try:
+            return await asyncio.wait_for(
+                self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[OneBot] Send timed out fast for chat %s; suppressing retries", chat_id)
+            return SendResult(success=False, error="onebot send timed out", retryable=False)
+
     _media_extension = _media.media_extension
     _classify_media_path = _media.classify_media_path
     _outbound_media_key = _media.outbound_media_key
