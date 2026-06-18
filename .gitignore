@@ -1,4 +1,5 @@
 __pycache__/
+<<<<<<< HEAD
 *.pyc
 *.pyo
 .pytest_cache/
@@ -6,3 +7,14 @@ media_cache/
 *.egg-info/
 .venv/
 *.json.bak
+=======
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+*.db
+*.sqlite
+.env
+.env.*
+>>>>>>> aaad7b1a70ed13c15c707e04b5f2cd4a3a169130

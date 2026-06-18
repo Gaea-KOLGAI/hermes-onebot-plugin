@@ -156,7 +156,13 @@ async def handle_notice(self, data: dict, conn: _NapCatConnection) -> None:
     notice_type = data.get("notice_type", "")
     sub_type = data.get("sub_type", "")
     if notice_type == "group_upload":
+<<<<<<< HEAD
         await self._handle_group_upload_notice(data, conn)
+=======
+        # Group file-upload notices are passive context only. Do not turn
+        # them into MessageEvent objects, otherwise every uploaded group
+        # file actively wakes Hermes and produces an unsolicited reply.
+>>>>>>> aaad7b1a70ed13c15c707e04b5f2cd4a3a169130
         return
     if notice_type in {"group_recall", "friend_recall", "group_increase", "group_decrease", "group_ban"}:
         return

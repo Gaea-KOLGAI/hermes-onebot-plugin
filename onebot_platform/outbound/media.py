@@ -133,7 +133,11 @@ async def send_media(self, chat_id: str, seg_type: str, file_val: str,
         segments = self._with_metadata_mention(chat_id, metadata, {"type": seg_type, "data": {"file": file_val}})
         if caption:
             segments.append({"type": "text", "data": {"text": caption}})
+<<<<<<< HEAD
         message = await self._message_with_optional_reply(chat_id, reply_to, *segments)
+=======
+        message = self._message_with_optional_reply(chat_id, reply_to, *segments)
+>>>>>>> aaad7b1a70ed13c15c707e04b5f2cd4a3a169130
         ws = conn.ws
         ws_is_ready = ws is not None and getattr(ws, "close_code", None) is None
         if conn.http_api_url and not ws_is_ready:
