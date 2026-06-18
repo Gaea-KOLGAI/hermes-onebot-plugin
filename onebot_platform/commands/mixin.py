@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import onebot_platform.adapter_runtime as _runtime
 globals().update({k: v for k, v in vars(_runtime).items() if not k.startswith('__')})
 
@@ -21,17 +23,31 @@ class CommandMixin:
             ("/settool", self._cmd_settool, True),
             ("/setmd", self._cmd_setmd, True),
             ("/setallowall", self._cmd_setallowall, True),
+            ("/setqqid", self._cmd_setqqid, True),
+            ("/setquote", self._cmd_setquote, True),
+            ("/setforward", self._cmd_setforward, True),
+            ("/setat", self._cmd_setat, True),
         ]
         for name, handler, admin in cmds:
             self._commands[name] = _CmdDef(name, handler, admin_only=admin)
     async def _try_handle_command(self, data: dict, conn, text_for_cmd: str,
                                    msg_type: str, user_id: str, admin_qq) -> bool:
-        matches = [(name, defn) for name, defn in self._commands.items()
-                   if text_for_cmd == name or text_for_cmd.startswith(name + " ")]
+        def _match(text):
+            return [(name, defn) for name, defn in self._commands.items()
+                    if text == name or text.startswith(name + " ")]
+        matches = _match(text_for_cmd)
+        matched_text = text_for_cmd
+        if not matches and conn.self_id:
+            stripped = text_for_cmd
+            stripped = re.sub(r'@\S*\(QQ:' + re.escape(conn.self_id) + r'\)\s*', '', stripped)
+            stripped = re.sub(r'@' + re.escape(conn.self_id) + r'\s*', '', stripped)
+            if stripped != text_for_cmd:
+                matches = _match(stripped)
+                matched_text = stripped
         if not matches:
             return False
         cmd_name, cmd_def = max(matches, key=lambda m: len(m[0]))
-        cmd_args = text_for_cmd[len(cmd_name):].strip()
+        cmd_args = matched_text[len(cmd_name):].strip()
         if cmd_def.admin_only and user_id != admin_qq:
             await self._send_reply_async_conn(conn, data, "✗ 只有管理员可以执行此命令")
             return True
@@ -146,10 +162,23 @@ class CommandMixin:
                 "显示与体验",
                 "/settool on|off  工具调用提示",
                 "/setmd on|off  Markdown清理",
+                "/setqqid on|off  显示发送者QQ号",
+                "/setquote on|off  引用回复开关",
+                "/setforward on|off  长文本自动合并转发",
+                "/setat on|off  审批/系统消息自动@",
+            ],
+            "media": [
+                "媒体能力",
+                "图片/语音/视频/文件 收发",
+                "MEDIA:/本地路径 发送本地媒体",
+                "多张图片和多媒体批量发送",
+                "中文路径、空格路径和本地 file URI",
+                "HTTP API 作为发送兜底通道",
+                "群文件上传自动注入文本内容(64KB)",
             ],
         }
-        aliases = {"admin": "access", "perm": "access", "config": "basic", "display": "display"}
-        keys = [aliases[topic]] if topic in aliases else ["basic", "access", "display"]
+        aliases = {"admin": "access", "perm": "access", "config": "basic", "display": "display", "media": "media"}
+        keys = [aliases[topic]] if topic in aliases else ["basic", "access", "display", "media"]
         lines = ["OneBot指令中心", "用法：/onebot help admin", ""]
         for key in keys:
             section = sections[key]
@@ -199,6 +228,22 @@ class CommandMixin:
         await self._save_settings()
         await self._send_reply_async_conn(conn, data,
             f"✓ 允许所有人使用: {'开启' if val == 'on' else '关闭'}")
+    async def _cmd_setqqid(self, conn, data, args, user_id, admin_qq):
+        val = await self._onoff_arg(conn, data, args, "setqqid")
+        if val is None:
+            return
+        self._show_qq_id = (val == "on")
+        gs = self._get_global_settings()
+        gs["show_qq_id"] = self._show_qq_id
+        await self._save_settings()
+        await self._send_reply_async_conn(conn, data,
+            f"✓ 显示QQ号: {'开启' if val == 'on' else '关闭'}")
+    async def _cmd_setquote(self, conn, data, args, user_id, admin_qq):
+        await self._cmd_toggle_setting(conn, data, args, "quote_reply", "引用回复", "setquote")
+    async def _cmd_setforward(self, conn, data, args, user_id, admin_qq):
+        await self._cmd_toggle_setting(conn, data, args, "auto_forward", "长文本自动合并转发", "setforward")
+    async def _cmd_setat(self, conn, data, args, user_id, admin_qq):
+        await self._cmd_toggle_setting(conn, data, args, "auto_at_originator", "审批自动@", "setat", is_global=True)
     async def _cmd_config(self, conn, data, args, user_id, admin_qq):
         account_name = conn.name if self._multi_account else ""
         _cfg_chat_id = _make_chat_id(data, account_name)
@@ -220,6 +265,9 @@ class CommandMixin:
             f"  Markdown清理：{_state(cs.get('strip_markdown'))}",
             f"  允许所有人：{'开启' if conn_allow_all else '关闭'}",
             f"  显示QQ号：{'开启' if self._show_qq_id else '关闭'}",
+            f"  引用回复：{_state(cs.get('quote_reply'), '开启')}",
+            f"  长文本自动转发：{_state(cs.get('auto_forward'), '开启')}",
+            f"  审批自动@：{_state(gs.get('auto_at_originator'), '开启')}",
             "",
             "【连接】",
             f"  WebSocket：{conn.ws_mode}",

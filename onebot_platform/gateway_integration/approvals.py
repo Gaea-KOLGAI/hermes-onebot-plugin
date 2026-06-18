@@ -19,10 +19,14 @@ _UPDATE_CHOICES = {
 _APPROVAL_REACTION_EMOJI_ID = "66"
 
 
-def _approval_notify_metadata(chat_id: str, metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _approval_notify_metadata(chat_id: str, metadata: Optional[Dict[str, Any]], last_msg_user_id: str = "", auto_at_enabled: bool = True) -> Optional[Dict[str, Any]]:
     notify_metadata = dict(metadata or {})
     msg_type, _target_id = _parse_chat_id(chat_id)
+    if not auto_at_enabled:
+        return notify_metadata or None
     originator = str(notify_metadata.get("originator_user_id") or "").strip()
+    if not originator and last_msg_user_id:
+        originator = str(last_msg_user_id).strip()
     if msg_type == "group" and originator and originator.isdigit():
         notify_metadata.setdefault("mention_originator_user_id", originator)
         notify_metadata.setdefault("mention_reason", "approval_prompt")
@@ -56,7 +60,11 @@ class ApprovalMixin:
             f"回复4 拒绝"
         )
         reply_to = self._last_msg_id.get(chat_id)
-        approval_metadata = _approval_notify_metadata(chat_id, metadata)
+        last_user = self._last_msg_user_id.get(chat_id, "")
+        _gs = self._plugin_settings.get_chat("_global")
+        _auto_at = _gs.get("auto_at_originator")
+        _auto_at = True if _auto_at is None else bool(_auto_at)
+        approval_metadata = _approval_notify_metadata(chat_id, metadata, last_user, _auto_at)
         result = await self.send(chat_id, msg, reply_to=reply_to, metadata=approval_metadata)
         approval_msg_id = str(getattr(result, "message_id", "") or "")
         if approval_msg_id:
@@ -89,7 +97,12 @@ class ApprovalMixin:
         )
         reply_to = self._last_msg_id.get(chat_id)
         self._pending_update_chats[chat_id] = time.time()
-        return await self.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
+        last_user = self._last_msg_user_id.get(chat_id, "")
+        _gs = self._plugin_settings.get_chat("_global")
+        _auto_at = _gs.get("auto_at_originator")
+        _auto_at = True if _auto_at is None else bool(_auto_at)
+        update_metadata = _approval_notify_metadata(chat_id, metadata, last_user, _auto_at)
+        return await self.send(chat_id, msg, reply_to=reply_to, metadata=update_metadata)
     async def _resolve_approval_shortcut(
         self,
         chat_id: str,
@@ -103,6 +116,12 @@ class ApprovalMixin:
         if not _HAS_APPROVAL:
             return False
         text = _strip_slash(user_text.strip().lower())
+        # Strip leading @mention: @name(QQ:xxx) or @xxx
+        if conn_self := getattr(self._get_conn_for_chat(chat_id), "self_id", "") or "":
+            import re
+            text = re.sub(r'@\S*\(QQ:' + re.escape(conn_self) + r'\)\s*', '', text)
+            text = re.sub(r'@' + re.escape(conn_self) + r'\s*', '', text)
+            text = text.strip()
         choice = _APPROVAL_CHOICES.get(text)
         if choice is None:
             return False
@@ -163,6 +182,12 @@ class ApprovalMixin:
         if chat_id not in self._pending_update_chats:
             return False
         text = _strip_slash(user_text.strip().lower())
+        # Strip leading @mention: @name(QQ:xxx) or @xxx
+        if conn_self := getattr(self._get_conn_for_chat(chat_id), "self_id", "") or "":
+            import re
+            text = re.sub(r'@\S*\(QQ:' + re.escape(conn_self) + r'\)\s*', '', text)
+            text = re.sub(r'@' + re.escape(conn_self) + r'\s*', '', text)
+            text = text.strip()
         answer = _UPDATE_CHOICES.get(text)
         if answer is None:
             return False

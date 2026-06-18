@@ -19,15 +19,20 @@ class MessageMixin:
         segments = _extract_segments(raw_message)
         text_for_cmd = _segments_text(segments)
         reply_to_message_id = _extract_reply(segments)
-        is_slash_cmd = text_for_cmd.startswith("/")
+        is_slash_cmd = text_for_cmd.startswith("/") or any(
+            isinstance(seg, dict) and seg.get("type") == "text"
+            and str(seg.get("data", {}).get("text", "")).lstrip().startswith("/")
+            for seg in segments
+        )
         if not await self._check_authorization_async(user_id, msg_type, data, conn):
-            self._cleanup_seq_dictionaries(_make_chat_id(data, account_name))
+            await self._cleanup_seq_dictionaries(_make_chat_id(data, account_name))
             return
         admin_qq = (getattr(conn, 'admin_qq', None)
                     or os.getenv("ONEBOT_ADMIN_QQ", "").strip()
                     or "")
         chat_id = _make_chat_id(data, account_name)
-        self._chat_msg_seq[chat_id] = self._chat_msg_seq.get(chat_id, 0) + 1
+        async with self._chat_seq_lock:
+            self._chat_msg_seq[chat_id] = self._chat_msg_seq.get(chat_id, 0) + 1
         approval_chat_ids = [chat_id]
         if self._multi_account and account_name and chat_id.startswith(f"{account_name}:"):
             approval_chat_ids.append(chat_id.split(":", 1)[1])
@@ -52,9 +57,12 @@ class MessageMixin:
                 return
         text = self._strip_at_mentions(parsed["text"], raw_message, conn, msg_type)
         if message_id:
-            self._last_msg_id[chat_id] = message_id
-        self._msg_receive_seq[message_id] = self._chat_msg_seq.get(chat_id, 0)
-        self._cleanup_seq_dictionaries(chat_id)
+            async with self._chat_seq_lock:
+                self._last_msg_id[chat_id] = message_id
+                self._msg_receive_seq[message_id] = self._chat_msg_seq.get(chat_id, 0)
+        if msg_type == "group" and user_id and user_id.isdigit():
+            self._last_msg_user_id[chat_id] = user_id
+        await self._cleanup_seq_dictionaries(chat_id)
         sender = data.get("sender", {})
         sender_name = sender.get("card") or sender.get("nickname") or user_id
         if msg_type == "group":
@@ -94,6 +102,8 @@ class MessageMixin:
     def _check_wake_trigger(self, msg_type: str, is_slash_cmd: bool,
                             text_for_cmd: str, raw_message, conn,
                             segments: Optional[List[Dict[str, Any]]] = None) -> bool:
+        if is_slash_cmd:
+            return True
         if msg_type == "group":
             segments_for_wake = segments if segments is not None else _extract_segments(raw_message)
             if not conn.is_group_wake_triggered(raw_message, text_for_cmd, segments_for_wake):
@@ -141,14 +151,15 @@ class MessageMixin:
             return
         for k in list(d.keys())[:prune_count]:
             del d[k]
-    def _cleanup_seq_dictionaries(self, chat_id: str):
+    async def _cleanup_seq_dictionaries(self, chat_id: str):
         now = time.time()
         if now - self._last_seq_cleanup_time < 60:
             return
         self._last_seq_cleanup_time = now
-        self._prune_oldest(self._msg_receive_seq, 200, 50)
-        self._prune_oldest(self._chat_msg_seq, 500, 300)
-        for d in (self._last_msg_id, self._active_input_status):
+        async with self._chat_seq_lock:
+            self._prune_oldest(self._msg_receive_seq, 200, 50)
+            self._prune_oldest(self._chat_msg_seq, 500, 300)
+        for d in (self._last_msg_id, self._last_msg_user_id, self._active_input_status):
             self._prune_arbitrary(d, 500)
         if len(self._last_progress_msg) > 200:
             for k in list(self._last_progress_msg)[:len(self._last_progress_msg) - 200]:
@@ -176,7 +187,11 @@ class MessageMixin:
                 del d[k]
     def _strip_at_mentions(self, text: str, raw_message, conn, msg_type: str) -> str:
         if msg_type == "group" and conn.self_id:
+            # Strip CQ code format: [CQ:at,qq=xxx]
             text = re.sub(r'\[CQ:at,qq=' + re.escape(conn.self_id) + r'\]', '', text).strip()
+            # Strip human-readable format from _segments_text: @name(QQ:xxx) or @xxx
+            text = re.sub(r'@\S*\(QQ:' + re.escape(conn.self_id) + r'\)\s*', '', text)
+            text = re.sub(r'@' + re.escape(conn.self_id) + r'\s*', '', text)
             if isinstance(raw_message, list) and any(
                 seg.get("type") == "at" and str((seg.get("data") or {}).get("qq", "")) == conn.self_id
                 for seg in raw_message
