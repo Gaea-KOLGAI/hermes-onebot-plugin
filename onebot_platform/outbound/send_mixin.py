@@ -102,6 +102,22 @@ class SendMixin:
             return {"status": "failed", "retcode": e.code, "msg": f"HTTP {e.code}: {e.reason}"}
         except Exception as e:
             return {"status": "failed", "retcode": -1, "msg": str(e)}
+    def _should_redirect_media_to_dm(self, chat_id: str, msg_kind: str, target_id: str) -> tuple:
+        """When media_to_dm is enabled for a group chat, redirect media/file
+        delivery to the last sender's private chat.  Returns (msg_kind, target_id)."""
+        if msg_kind != "group":
+            return msg_kind, target_id
+        try:
+            settings = self._plugin_settings.get_chat(chat_id)
+        except Exception:
+            return msg_kind, target_id
+        if not settings.get("media_to_dm"):
+            return msg_kind, target_id
+        last_user = getattr(self, "_last_msg_user_id", {}).get(chat_id, "")
+        if last_user and str(last_user).isdigit():
+            return "private", str(last_user)
+        return msg_kind, target_id
+
     def _send_msg_params(self, msg_kind: str, target_id: str, message_segments: list) -> Tuple[str, dict]:
         tid = _safe_int(target_id, "target_id")
         return (f"send_{msg_kind}_msg", {_onebot_target_key(msg_kind): tid, "message": message_segments})
@@ -363,6 +379,7 @@ class SendMixin:
         try:
             conn = self._get_conn_for_chat(chat_id)
             msg_kind, target_id = _parse_chat_id(chat_id)
+            msg_kind, target_id = self._should_redirect_media_to_dm(chat_id, msg_kind, target_id)
         except (ValueError, TypeError) as e:
             return SendResult(success=False, error=str(e))
         raw_path = str(file_path).strip()

@@ -130,6 +130,7 @@ async def send_media(self, chat_id: str, seg_type: str, file_val: str,
     try:
         conn = self._get_conn_for_chat(chat_id)
         msg_kind, target_id = _parse_chat_id(chat_id)
+        msg_kind, target_id = self._should_redirect_media_to_dm(chat_id, msg_kind, target_id)
         segments = self._with_metadata_mention(chat_id, metadata, {"type": seg_type, "data": {"file": file_val}})
         if caption:
             segments.append({"type": "text", "data": {"text": caption}})

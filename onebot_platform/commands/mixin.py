@@ -27,6 +27,7 @@ class CommandMixin:
             ("/setquote", self._cmd_setquote, True),
             ("/setforward", self._cmd_setforward, True),
             ("/setat", self._cmd_setat, True),
+            ("/setfilemode", self._cmd_setfilemode, True),
         ]
         for name, handler, admin in cmds:
             self._commands[name] = _CmdDef(name, handler, admin_only=admin)
@@ -166,6 +167,7 @@ class CommandMixin:
                 "/setquote on|off  引用回复开关",
                 "/setforward on|off  长文本自动合并转发",
                 "/setat on|off  审批/系统消息自动@",
+                "/setfilemode on|off  群聊文件发私聊",
             ],
             "media": [
                 "媒体能力",
@@ -244,6 +246,8 @@ class CommandMixin:
         await self._cmd_toggle_setting(conn, data, args, "auto_forward", "长文本自动合并转发", "setforward")
     async def _cmd_setat(self, conn, data, args, user_id, admin_qq):
         await self._cmd_toggle_setting(conn, data, args, "auto_at_originator", "审批自动@", "setat", is_global=True)
+    async def _cmd_setfilemode(self, conn, data, args, user_id, admin_qq):
+        await self._cmd_toggle_setting(conn, data, args, "media_to_dm", "文件发私聊", "setfilemode")
     async def _cmd_config(self, conn, data, args, user_id, admin_qq):
         account_name = conn.name if self._multi_account else ""
         _cfg_chat_id = _make_chat_id(data, account_name)
@@ -268,6 +272,7 @@ class CommandMixin:
             f"  引用回复：{_state(cs.get('quote_reply'), '开启')}",
             f"  长文本自动转发：{_state(cs.get('auto_forward'), '开启')}",
             f"  审批自动@：{_state(gs.get('auto_at_originator'), '开启')}",
+            f"  文件发私聊：{_state(cs.get('media_to_dm'), '关闭')}",
             "",
             "【连接】",
             f"  WebSocket：{conn.ws_mode}",
