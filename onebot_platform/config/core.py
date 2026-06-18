@@ -106,14 +106,7 @@ def build_runtime_paths() -> tuple[Path, Path, tuple[Path, Path]]:
     napcat_send_dir = Path("<napcat-data-dir>/hermes-send")
     extra_roots = tuple(
         Path(root).expanduser().resolve()
-<<<<<<< HEAD
-        for root in [
-            *_csv_list(os.getenv("ONEBOT_OUTBOUND_ALLOWED_ROOTS")),
-            "/root/media_test",
-        ]
-=======
         for root in _csv_list(os.getenv("ONEBOT_OUTBOUND_ALLOWED_ROOTS"))
->>>>>>> aaad7b1a70ed13c15c707e04b5f2cd4a3a169130
     )
     outbound_roots = (media_cache_dir, Path(tempfile.gettempdir()), napcat_send_dir, *extra_roots)
     return data_dir, media_cache_dir, outbound_roots

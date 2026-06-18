@@ -8,11 +8,7 @@ import onebot_platform.adapter_runtime as _runtime
 globals().update({k: v for k, v in vars(_runtime).items() if not k.startswith("__")})
 
 _RUNTIME_MAP_ATTRS = (
-<<<<<<< HEAD
-    "_chat_msg_seq", "_msg_receive_seq", "_last_msg_id", "_last_msg_user_id",
-=======
     "_chat_msg_seq", "_msg_receive_seq", "_last_msg_id",
->>>>>>> aaad7b1a70ed13c15c707e04b5f2cd4a3a169130
     "_pending_approvals", "_pending_approval_admin", "_pending_approval_messages", "_approval_locks",
     "_pending_update_chats", "_last_progress_msg", "_in_edit_resend_count",
     "_active_input_status", "_active_tasks", "_reject_notified",
@@ -78,10 +74,6 @@ def install_shared_state(target: Any, extra: dict, kwargs: dict) -> None:
     target._http_client = kwargs.get("http_client")
     target._show_qq_id = bool(extra.get("show_qq_id", False))
     target._settings_lock = asyncio.Lock()
-<<<<<<< HEAD
-    target._chat_seq_lock = asyncio.Lock()
-=======
->>>>>>> aaad7b1a70ed13c15c707e04b5f2cd4a3a169130
     for attr in _RUNTIME_MAP_ATTRS:
         setattr(target, attr, {})
     target._unsupported_actions = set()
